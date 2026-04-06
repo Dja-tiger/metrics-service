@@ -18,3 +18,19 @@ func (s *MetricsService) UpdateGauge(name string, value float64) {
 func (s *MetricsService) UpdateCounter(name string, value int64) {
 	s.repo.UpdateCounter(name, value)
 }
+
+func (s *MetricsService) GetGauge(name string) (float64, bool) {
+	return s.repo.GetGauge(name)
+}
+
+func (s *MetricsService) GetCounter(name string) (int64, bool) {
+	return s.repo.GetCounter(name)
+}
+
+func (s *MetricsService) GetAllGauges() map[string]float64 {
+	return s.repo.GetAllGauges()
+}
+
+func (s *MetricsService) GetAllCounters() map[string]int64 {
+	return s.repo.GetAllCounters()
+}

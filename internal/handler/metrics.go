@@ -1,9 +1,12 @@
 package handler
 
 import (
+	"fmt"
+	"html"
 	"net/http"
 	"strconv"
-	"strings"
+
+	"github.com/go-chi/chi/v5"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 )
@@ -12,6 +15,10 @@ import (
 type MetricsService interface {
 	UpdateGauge(name string, value float64)
 	UpdateCounter(name string, value int64)
+	GetGauge(name string) (float64, bool)
+	GetCounter(name string) (int64, bool)
+	GetAllGauges() map[string]float64
+	GetAllCounters() map[string]int64
 }
 
 // MetricsHandler handles HTTP requests for metrics.
@@ -29,23 +36,9 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	parts := strings.Split(strings.Trim(r.URL.Path, "/"), "/")
-
-	// ожидаем путь вида:
-	// /update/<type>/<name>/<value>
-	if len(parts) != 4 {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	if parts[0] != "update" {
-		w.WriteHeader(http.StatusNotFound)
-		return
-	}
-
-	metricType := parts[1]
-	metricName := parts[2]
-	metricValue := parts[3]
+	metricType := chi.URLParam(r, "type")
+	metricName := chi.URLParam(r, "name")
+	metricValue := chi.URLParam(r, "value")
 
 	if metricName == "" {
 		w.WriteHeader(http.StatusNotFound)
@@ -76,4 +69,61 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	default:
 		w.WriteHeader(http.StatusBadRequest)
 	}
+}
+
+func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	metricType := chi.URLParam(r, "type")
+	metricName := chi.URLParam(r, "name")
+
+	if metricName == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	switch metricType {
+	case models.Gauge:
+		value, ok := h.service.GetGauge(metricName)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "%s", strconv.FormatFloat(value, 'f', -1, 64))
+
+	case models.Counter:
+		value, ok := h.service.GetCounter(metricName)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = fmt.Fprintf(w, "%s", strconv.FormatInt(value, 10))
+
+	default:
+		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = fmt.Fprint(w, "<html><body><ul>")
+
+	for name, value := range h.service.GetAllGauges() {
+		_, _ = fmt.Fprintf(w, "<li>%s: %s</li>", html.EscapeString(name), strconv.FormatFloat(value, 'f', -1, 64))
+	}
+	for name, value := range h.service.GetAllCounters() {
+		_, _ = fmt.Fprintf(w, "<li>%s: %s</li>", html.EscapeString(name), strconv.FormatInt(value, 10))
+	}
+
+	_, _ = fmt.Fprint(w, "</ul></body></html>")
 }
