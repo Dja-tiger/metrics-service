@@ -1,7 +1,9 @@
 package main
 
 import (
+	"flag"
 	"net/http"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 
@@ -11,6 +13,9 @@ import (
 )
 
 func main() {
+	addr := flag.String("a", "localhost:8080", "HTTP server address")
+	flag.Parse()
+
 	storage := repository.NewMemStorage()
 	metricsService := service.NewMetricsService(storage)
 	metricsHandler := handler.NewMetricsHandler(metricsService)
@@ -20,8 +25,19 @@ func main() {
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Get("/", metricsHandler.ListMetrics)
 
-	err := http.ListenAndServe(":8080", router)
+	listenAddr := normalizeListenAddr(*addr)
+	err := http.ListenAndServe(listenAddr, router)
 	if err != nil {
 		panic(err)
 	}
+}
+
+func normalizeListenAddr(addr string) string {
+	if strings.HasPrefix(addr, "http://") {
+		return strings.TrimPrefix(addr, "http://")
+	}
+	if strings.HasPrefix(addr, "https://") {
+		return strings.TrimPrefix(addr, "https://")
+	}
+	return addr
 }
