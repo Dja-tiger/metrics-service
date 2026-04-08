@@ -10,7 +10,10 @@ import (
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
 	store := NewStore()
-	a := NewAgent("http://localhost:8080", time.Second, time.Second, nil, store)
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, nil, store)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
 
 	a.PollOnce()
 
@@ -52,7 +55,7 @@ func TestPollOnceCollectsMetrics(t *testing.T) {
 		}
 	}
 
-	counters := store.SnapshotCounters()
+	counters := store.SnapshotAndResetCounters()
 	if counters["PollCount"] != 1 {
 		t.Fatalf("expected PollCount to be 1, got %d", counters["PollCount"])
 	}
@@ -73,7 +76,10 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a := NewAgent(server.URL, time.Second, time.Second, server.Client(), store)
+	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), store)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
 	a.ReportOnce()
 
 	expected := []string{

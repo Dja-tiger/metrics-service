@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"log"
 	"net/http"
 	"strings"
 
@@ -26,9 +27,8 @@ func main() {
 	router.Get("/", metricsHandler.ListMetrics)
 
 	listenAddr := normalizeListenAddr(*addr)
-	err := http.ListenAndServe(listenAddr, router)
-	if err != nil {
-		panic(err)
+	if err := http.ListenAndServe(listenAddr, router); err != nil {
+		log.Fatal(err)
 	}
 }
 

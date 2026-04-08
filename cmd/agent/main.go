@@ -2,6 +2,7 @@ package main
 
 import (
 	"flag"
+	"log"
 	"math/rand"
 	"strings"
 	"time"
@@ -17,20 +18,28 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 
+	if *pollInterval <= 0 {
+		log.Fatal("poll interval must be positive")
+	}
+	if *reportInterval <= 0 {
+		log.Fatal("report interval must be positive")
+	}
+
 	serverURL := normalizeServerURL(*addr)
 	store := agent.NewStore()
-	metricsAgent := agent.NewAgent(
+	metricsAgent, err := agent.NewAgent(
 		serverURL,
 		time.Duration(*pollInterval)*time.Second,
 		time.Duration(*reportInterval)*time.Second,
 		nil,
 		store,
 	)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	go metricsAgent.PollLoop()
-	go metricsAgent.ReportLoop()
-
-	select {}
+	metricsAgent.ReportLoop()
 }
 
 func normalizeServerURL(addr string) string {

@@ -7,56 +7,10 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
+
+	"github.com/Dja-tiger/metrics-service/internal/repository"
+	"github.com/Dja-tiger/metrics-service/internal/service"
 )
-
-type mockService struct {
-	lastGaugeName   string
-	lastGaugeValue  float64
-	lastCounterName string
-	lastCounterVal  int64
-	gaugeCalls      int
-	counterCalls    int
-	gauges          map[string]float64
-	counters        map[string]int64
-}
-
-func (m *mockService) UpdateGauge(name string, value float64) {
-	m.lastGaugeName = name
-	m.lastGaugeValue = value
-	m.gaugeCalls++
-}
-
-func (m *mockService) UpdateCounter(name string, value int64) {
-	m.lastCounterName = name
-	m.lastCounterVal = value
-	m.counterCalls++
-}
-
-func (m *mockService) GetGauge(name string) (float64, bool) {
-	value, ok := m.gauges[name]
-	return value, ok
-}
-
-func (m *mockService) GetCounter(name string) (int64, bool) {
-	value, ok := m.counters[name]
-	return value, ok
-}
-
-func (m *mockService) GetAllGauges() map[string]float64 {
-	copyMap := make(map[string]float64, len(m.gauges))
-	for k, v := range m.gauges {
-		copyMap[k] = v
-	}
-	return copyMap
-}
-
-func (m *mockService) GetAllCounters() map[string]int64 {
-	copyMap := make(map[string]int64, len(m.counters))
-	for k, v := range m.counters {
-		copyMap[k] = v
-	}
-	return copyMap
-}
 
 func TestUpdateMetric(t *testing.T) {
 	tests := []struct {
@@ -109,10 +63,8 @@ func TestUpdateMetric(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			svc := &mockService{
-				gauges:   map[string]float64{},
-				counters: map[string]int64{},
-			}
+			storage := repository.NewMemStorage()
+			svc := service.NewMetricsService(storage)
 			h := NewMetricsHandler(svc)
 
 			router := chi.NewRouter()
@@ -126,26 +78,26 @@ func TestUpdateMetric(t *testing.T) {
 				t.Fatalf("status code mismatch: got %d want %d", rec.Code, tt.wantStatusCode)
 			}
 
-			if tt.wantGaugeCall && svc.gaugeCalls != 1 {
-				t.Fatalf("expected gauge update to be called once, got %d", svc.gaugeCalls)
+			if tt.wantGaugeCall {
+				if _, ok := storage.GetGauge("Alloc"); !ok {
+					t.Fatalf("expected gauge to be stored")
+				}
 			}
 
-			if tt.wantCountCall && svc.counterCalls != 1 {
-				t.Fatalf("expected counter update to be called once, got %d", svc.counterCalls)
+			if tt.wantCountCall {
+				if value, ok := storage.GetCounter("PollCount"); !ok || value != 5 {
+					t.Fatalf("expected counter to be stored with value 5, got %d", value)
+				}
 			}
 		})
 	}
 }
 
 func TestGetValue(t *testing.T) {
-	svc := &mockService{
-		gauges: map[string]float64{
-			"Alloc": 12.34,
-		},
-		counters: map[string]int64{
-			"PollCount": 5,
-		},
-	}
+	storage := repository.NewMemStorage()
+	storage.UpdateGauge("Alloc", 12.34)
+	storage.UpdateCounter("PollCount", 5)
+	svc := service.NewMetricsService(storage)
 	h := NewMetricsHandler(svc)
 
 	router := chi.NewRouter()
@@ -194,14 +146,10 @@ func TestGetValue(t *testing.T) {
 }
 
 func TestListMetrics(t *testing.T) {
-	svc := &mockService{
-		gauges: map[string]float64{
-			"Alloc": 12.34,
-		},
-		counters: map[string]int64{
-			"PollCount": 5,
-		},
-	}
+	storage := repository.NewMemStorage()
+	storage.UpdateGauge("Alloc", 12.34)
+	storage.UpdateCounter("PollCount", 5)
+	svc := service.NewMetricsService(storage)
 	h := NewMetricsHandler(svc)
 
 	router := chi.NewRouter()

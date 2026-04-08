@@ -4,7 +4,7 @@ import "sync"
 
 // Store keeps metrics collected by the agent.
 type Store struct {
-	mu       sync.RWMutex
+	mu       sync.Mutex
 	gauges   map[string]float64
 	counters map[string]int64
 }
@@ -29,8 +29,8 @@ func (s *Store) IncCounter(name string, delta int64) {
 }
 
 func (s *Store) SnapshotGauges() map[string]float64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	copyMap := make(map[string]float64, len(s.gauges))
 	for k, v := range s.gauges {
 		copyMap[k] = v
@@ -38,12 +38,15 @@ func (s *Store) SnapshotGauges() map[string]float64 {
 	return copyMap
 }
 
-func (s *Store) SnapshotCounters() map[string]int64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+func (s *Store) SnapshotAndResetCounters() map[string]int64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	copyMap := make(map[string]int64, len(s.counters))
 	for k, v := range s.counters {
 		copyMap[k] = v
+	}
+	for k := range s.counters {
+		s.counters[k] = 0
 	}
 	return copyMap
 }

@@ -1,8 +1,7 @@
 package handler
 
 import (
-	"fmt"
-	"html"
+	"html/template"
 	"net/http"
 	"strconv"
 
@@ -93,7 +92,7 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "%s", strconv.FormatFloat(value, 'f', -1, 64))
+		_, _ = w.Write([]byte(strconv.FormatFloat(value, 'f', -1, 64)))
 
 	case models.Counter:
 		value, ok := h.service.GetCounter(metricName)
@@ -102,7 +101,7 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprintf(w, "%s", strconv.FormatInt(value, 10))
+		_, _ = w.Write([]byte(strconv.FormatInt(value, 10)))
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -116,14 +115,31 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	_, _ = fmt.Fprint(w, "<html><body><ul>")
 
-	for name, value := range h.service.GetAllGauges() {
-		_, _ = fmt.Fprintf(w, "<li>%s: %s</li>", html.EscapeString(name), strconv.FormatFloat(value, 'f', -1, 64))
-	}
-	for name, value := range h.service.GetAllCounters() {
-		_, _ = fmt.Fprintf(w, "<li>%s: %s</li>", html.EscapeString(name), strconv.FormatInt(value, 10))
+	data := struct {
+		Gauges   map[string]float64
+		Counters map[string]int64
+	}{
+		Gauges:   h.service.GetAllGauges(),
+		Counters: h.service.GetAllCounters(),
 	}
 
-	_, _ = fmt.Fprint(w, "</ul></body></html>")
+	if err := metricsTemplate.Execute(w, data); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+	}
 }
+
+var metricsTemplate = template.Must(template.New("metrics").Parse(`
+<html>
+  <body>
+    <ul>
+      {{- range $name, $value := .Gauges }}
+        <li>{{ $name }}: {{ $value }}</li>
+      {{- end }}
+      {{- range $name, $value := .Counters }}
+        <li>{{ $name }}: {{ $value }}</li>
+      {{- end }}
+    </ul>
+  </body>
+</html>
+`))
