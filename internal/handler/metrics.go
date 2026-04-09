@@ -2,6 +2,7 @@ package handler
 
 import (
 	"html/template"
+	"log"
 	"net/http"
 	"strconv"
 
@@ -125,6 +126,7 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := metricsTemplate.Execute(w, data); err != nil {
+		log.Printf("render metrics page: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 }
