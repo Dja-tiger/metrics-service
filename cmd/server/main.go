@@ -4,6 +4,7 @@ import (
 	"flag"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -14,8 +15,13 @@ import (
 )
 
 func main() {
-	addr := flag.String("a", "localhost:8080", "HTTP server address")
+	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	flag.Parse()
+
+	address := *addrFlag
+	if envAddress := os.Getenv("ADDRESS"); envAddress != "" {
+		address = envAddress
+	}
 
 	storage := repository.NewMemStorage()
 	metricsService := service.NewMetricsService(storage)
@@ -26,7 +32,7 @@ func main() {
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Get("/", metricsHandler.ListMetrics)
 
-	listenAddr := normalizeListenAddr(*addr)
+	listenAddr := normalizeListenAddr(address)
 	if err := http.ListenAndServe(listenAddr, router); err != nil {
 		log.Fatal(err)
 	}
