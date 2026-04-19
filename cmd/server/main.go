@@ -8,13 +8,23 @@ import (
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/zap"
 
 	"github.com/Dja-tiger/metrics-service/internal/handler"
+	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 	"github.com/Dja-tiger/metrics-service/internal/service"
 )
 
 func main() {
+	logger, err := zap.NewProduction()
+	if err != nil {
+		panic(err)
+	}
+	defer func() {
+		_ = logger.Sync()
+	}()
+
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	flag.Parse()
 
@@ -28,12 +38,13 @@ func main() {
 	metricsHandler := handler.NewMetricsHandler(metricsService)
 
 	router := chi.NewRouter()
+	router.Use(appmiddleware.RequestLogger(logger))
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Get("/", metricsHandler.ListMetrics)
 
 	listenAddr := normalizeListenAddr(address)
-	if err := http.ListenAndServe(listenAddr, router); err != nil {
+	if err = http.ListenAndServe(listenAddr, router); err != nil {
 		log.Fatal(err)
 	}
 }
