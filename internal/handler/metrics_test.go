@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"bytes"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +10,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 	"github.com/Dja-tiger/metrics-service/internal/service"
 )
@@ -169,5 +172,162 @@ func TestListMetrics(t *testing.T) {
 	}
 	if !strings.Contains(body, "PollCount") || !strings.Contains(body, "5") {
 		t.Fatalf("expected counter in response body, got %q", body)
+	}
+}
+
+func TestUpdateMetricJSON(t *testing.T) {
+	tests := []struct {
+		name           string
+		body           models.Metrics
+		wantStatusCode int
+	}{
+		{
+			name: "valid gauge",
+			body: func() models.Metrics {
+				value := 42.5
+				return models.Metrics{
+					ID:    "Alloc",
+					MType: models.Gauge,
+					Value: &value,
+				}
+			}(),
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "valid counter",
+			body: func() models.Metrics {
+				delta := int64(5)
+				return models.Metrics{
+					ID:    "PollCount",
+					MType: models.Counter,
+					Delta: &delta,
+				}
+			}(),
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "bad type",
+			body: models.Metrics{
+				ID:    "A",
+				MType: "bad",
+			},
+			wantStatusCode: http.StatusBadRequest,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := repository.NewMemStorage()
+			svc := service.NewMetricsService(storage)
+			h := NewMetricsHandler(svc)
+
+			router := chi.NewRouter()
+			router.Post("/update", h.UpdateMetricJSON)
+
+			payload, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Fatalf("status code mismatch: got %d want %d", rec.Code, tt.wantStatusCode)
+			}
+
+			if tt.wantStatusCode == http.StatusOK {
+				if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+					t.Fatalf("unexpected content-type: %s", rec.Header().Get("Content-Type"))
+				}
+			}
+		})
+	}
+}
+
+func TestGetValueJSON(t *testing.T) {
+	storage := repository.NewMemStorage()
+	storage.UpdateGauge("Alloc", 12.34)
+	storage.UpdateCounter("PollCount", 5)
+	svc := service.NewMetricsService(storage)
+	h := NewMetricsHandler(svc)
+
+	router := chi.NewRouter()
+	router.Post("/value", h.GetValueJSON)
+
+	tests := []struct {
+		name           string
+		requestBody    models.Metrics
+		wantStatusCode int
+		check          func(t *testing.T, metric models.Metrics)
+	}{
+		{
+			name: "gauge value",
+			requestBody: models.Metrics{
+				ID:    "Alloc",
+				MType: models.Gauge,
+			},
+			wantStatusCode: http.StatusOK,
+			check: func(t *testing.T, metric models.Metrics) {
+				if metric.Value == nil || *metric.Value != 12.34 {
+					t.Fatalf("unexpected gauge value: %#v", metric.Value)
+				}
+			},
+		},
+		{
+			name: "counter value",
+			requestBody: models.Metrics{
+				ID:    "PollCount",
+				MType: models.Counter,
+			},
+			wantStatusCode: http.StatusOK,
+			check: func(t *testing.T, metric models.Metrics) {
+				if metric.Delta == nil || *metric.Delta != 5 {
+					t.Fatalf("unexpected counter delta: %#v", metric.Delta)
+				}
+			},
+		},
+		{
+			name: "unknown metric",
+			requestBody: models.Metrics{
+				ID:    "Unknown",
+				MType: models.Gauge,
+			},
+			wantStatusCode: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			payload, err := json.Marshal(tt.requestBody)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/value", bytes.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Fatalf("status code mismatch: got %d want %d", rec.Code, tt.wantStatusCode)
+			}
+
+			if tt.wantStatusCode == http.StatusOK {
+				if !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+					t.Fatalf("unexpected content-type: %s", rec.Header().Get("Content-Type"))
+				}
+
+				var response models.Metrics
+				if err := json.NewDecoder(rec.Body).Decode(&response); err != nil {
+					t.Fatalf("decode response: %v", err)
+				}
+				if tt.check != nil {
+					tt.check(t, response)
+				}
+			}
+		})
 	}
 }

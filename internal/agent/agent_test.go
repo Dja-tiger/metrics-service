@@ -1,12 +1,19 @@
 package agent
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"strings"
 	"testing"
 	"time"
 )
+
+type receivedMetric struct {
+	ID    string   `json:"id"`
+	MType string   `json:"type"`
+	Delta *int64   `json:"delta,omitempty"`
+	Value *float64 `json:"value,omitempty"`
+}
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
 	store := NewStore()
@@ -66,12 +73,21 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	store.SetGauge("TestGauge", 12.34)
 	store.IncCounter("TestCounter", 7)
 
-	paths := make(map[string]struct{})
+	received := make(map[string]receivedMetric)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Content-Type") != "text/plain" {
+		if r.URL.Path != "/update" {
+			t.Fatalf("unexpected path: %s", r.URL.Path)
+		}
+		if r.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("unexpected content-type: %s", r.Header.Get("Content-Type"))
 		}
-		paths[r.URL.Path] = struct{}{}
+
+		var metric receivedMetric
+		if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+			t.Fatalf("failed to decode metric body: %v", err)
+		}
+		received[metric.MType+":"+metric.ID] = metric
+
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
@@ -82,21 +98,13 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	}
 	a.ReportOnce()
 
-	expected := []string{
-		"/update/gauge/TestGauge/12.34",
-		"/update/counter/TestCounter/7",
+	gaugeMetric, ok := received["gauge:TestGauge"]
+	if !ok || gaugeMetric.Value == nil || *gaugeMetric.Value != 12.34 {
+		t.Fatalf("expected gauge metric with value 12.34, got %#v", gaugeMetric)
 	}
 
-	for _, p := range expected {
-		found := false
-		for got := range paths {
-			if strings.HasPrefix(got, p) {
-				found = true
-				break
-			}
-		}
-		if !found {
-			t.Fatalf("expected request path %q not found; got %#v", p, paths)
-		}
+	counterMetric, ok := received["counter:TestCounter"]
+	if !ok || counterMetric.Delta == nil || *counterMetric.Delta != 7 {
+		t.Fatalf("expected counter metric with delta 7, got %#v", counterMetric)
 	}
 }

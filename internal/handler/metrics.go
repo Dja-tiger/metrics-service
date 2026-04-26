@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
@@ -71,6 +72,47 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var metric models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if metric.ID == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		h.service.UpdateGauge(metric.ID, *metric.Value)
+	case models.Counter:
+		if metric.Delta == nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		h.service.UpdateCounter(metric.ID, *metric.Delta)
+	default:
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(metric); err != nil {
+		log.Printf("encode update response: %v", err)
+	}
+}
+
 func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -106,6 +148,54 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 
 	default:
 		w.WriteHeader(http.StatusNotFound)
+	}
+}
+
+func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	var requestMetric models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&requestMetric); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	if requestMetric.ID == "" {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	responseMetric := models.Metrics{
+		ID:    requestMetric.ID,
+		MType: requestMetric.MType,
+	}
+
+	switch requestMetric.MType {
+	case models.Gauge:
+		value, ok := h.service.GetGauge(requestMetric.ID)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		responseMetric.Value = &value
+	case models.Counter:
+		value, ok := h.service.GetCounter(requestMetric.ID)
+		if !ok {
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		responseMetric.Delta = &value
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(responseMetric); err != nil {
+		log.Printf("encode value response: %v", err)
 	}
 }
 
