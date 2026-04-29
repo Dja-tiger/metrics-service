@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -81,9 +82,18 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 		if r.Header.Get("Content-Type") != "application/json" {
 			t.Fatalf("unexpected content-type: %s", r.Header.Get("Content-Type"))
 		}
+		if r.Header.Get("Content-Encoding") != "gzip" {
+			t.Fatalf("unexpected content-encoding: %s", r.Header.Get("Content-Encoding"))
+		}
 
 		var metric receivedMetric
-		if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer gzipReader.Close()
+
+		if err = json.NewDecoder(gzipReader).Decode(&metric); err != nil {
 			t.Fatalf("failed to decode metric body: %v", err)
 		}
 		received[metric.MType+":"+metric.ID] = metric
