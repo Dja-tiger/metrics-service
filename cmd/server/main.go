@@ -41,8 +41,10 @@ func main() {
 	router.Use(appmiddleware.RequestLogger(logger))
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)
 	router.Post("/update", metricsHandler.UpdateMetricJSON)
+	router.Post("/update/", metricsHandler.UpdateMetricJSON)
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Post("/value", metricsHandler.GetValueJSON)
+	router.Post("/value/", metricsHandler.GetValueJSON)
 	router.Get("/", metricsHandler.ListMetrics)
 
 	listenAddr := normalizeListenAddr(address)
