@@ -24,6 +24,17 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
+	storage := NewMemStorage()
+	if !restore {
+		return storage, nil
+	}
+	if err := storage.LoadFromFile(path); err != nil {
+		return nil, err
+	}
+	return storage, nil
+}
+
 func (s *MemStorage) UpdateGauge(name string, value float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -78,13 +89,33 @@ func (s *MemStorage) SaveToFile(path string) error {
 		return err
 	}
 
-	if dir := filepath.Dir(path); dir != "." {
+	dir := filepath.Dir(path)
+	if dir != "." {
 		if err = os.MkdirAll(dir, 0o755); err != nil {
 			return err
 		}
 	}
 
-	return os.WriteFile(path, data, 0o644)
+	tempFile, err := os.CreateTemp(dir, "metrics-*.tmp")
+	if err != nil {
+		return err
+	}
+	tempName := tempFile.Name()
+	defer os.Remove(tempName)
+
+	if _, err = tempFile.Write(data); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err = tempFile.Chmod(0o644); err != nil {
+		_ = tempFile.Close()
+		return err
+	}
+	if err = tempFile.Close(); err != nil {
+		return err
+	}
+
+	return os.Rename(tempName, path)
 }
 
 func (s *MemStorage) LoadFromFile(path string) error {

@@ -32,11 +32,6 @@ func NewMetricsHandler(service MetricsService) *MetricsHandler {
 }
 
 func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
 	metricValue := chi.URLParam(r, "value")
@@ -73,11 +68,6 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	var metric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -114,11 +104,6 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 }
 
 func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
 
@@ -152,11 +137,6 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	var requestMetric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&requestMetric); err != nil {
 		w.WriteHeader(http.StatusBadRequest)
@@ -200,11 +180,6 @@ func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	data := struct {

@@ -9,8 +9,9 @@ import (
 
 type loggingResponseWriter struct {
 	http.ResponseWriter
-	statusCode int
-	size       int
+	statusCode  int
+	size        int
+	wroteHeader bool
 }
 
 func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
@@ -21,11 +22,18 @@ func newLoggingResponseWriter(w http.ResponseWriter) *loggingResponseWriter {
 }
 
 func (w *loggingResponseWriter) WriteHeader(statusCode int) {
+	if w.wroteHeader {
+		return
+	}
+	w.wroteHeader = true
 	w.statusCode = statusCode
 	w.ResponseWriter.WriteHeader(statusCode)
 }
 
 func (w *loggingResponseWriter) Write(body []byte) (int, error) {
+	if !w.wroteHeader {
+		w.WriteHeader(http.StatusOK)
+	}
 	size, err := w.ResponseWriter.Write(body)
 	w.size += size
 	return size, err
