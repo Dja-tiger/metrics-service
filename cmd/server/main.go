@@ -33,8 +33,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	metricsService := service.NewMetricsService(storage)
-	service.ConfigurePersistence(metricsService, storage, cfg.FileStoragePath, time.Duration(cfg.StoreInterval)*time.Second, func(err error) {
+	metricsService := service.NewMetricsServiceWithPersistence(storage, storage, cfg.FileStoragePath, time.Duration(cfg.StoreInterval)*time.Second, func(err error) {
 		logger.Info("save metrics failed", zap.Error(err))
 	})
 	metricsHandler := handler.NewMetricsHandler(metricsService)

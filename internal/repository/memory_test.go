@@ -16,8 +16,8 @@ func TestMemStorageSaveAndLoadFromFile(t *testing.T) {
 		t.Fatalf("save metrics: %v", err)
 	}
 
-	restored := NewMemStorage()
-	if err := restored.LoadFromFile(path); err != nil {
+	restored, err := NewMemStorageWithRestore(path, true)
+	if err != nil {
 		t.Fatalf("load metrics: %v", err)
 	}
 
@@ -33,9 +33,7 @@ func TestMemStorageSaveAndLoadFromFile(t *testing.T) {
 }
 
 func TestMemStorageLoadMissingFile(t *testing.T) {
-	storage := NewMemStorage()
-
-	err := storage.LoadFromFile(filepath.Join(t.TempDir(), "missing.json"))
+	_, err := NewMemStorageWithRestore(filepath.Join(t.TempDir(), "missing.json"), true)
 	if err != nil {
 		t.Fatalf("missing file should not fail: %v", err)
 	}

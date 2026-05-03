@@ -3,6 +3,7 @@ package repository
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -29,7 +30,7 @@ func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 	if !restore {
 		return storage, nil
 	}
-	if err := storage.LoadFromFile(path); err != nil {
+	if err := storage.loadFromFile(path); err != nil {
 		return nil, err
 	}
 	return storage, nil
@@ -86,50 +87,57 @@ func (s *MemStorage) SaveToFile(path string) error {
 
 	data, err := json.MarshalIndent(metrics, "", "  ")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to marshal metrics: %w", err)
 	}
 
 	dir := filepath.Dir(path)
 	if dir != "." {
 		if err = os.MkdirAll(dir, 0o755); err != nil {
-			return err
+			return fmt.Errorf("failed to create storage directory: %w", err)
 		}
 	}
 
 	tempFile, err := os.CreateTemp(dir, "metrics-*.tmp")
 	if err != nil {
-		return err
+		return fmt.Errorf("failed to create temp file: %w", err)
 	}
 	tempName := tempFile.Name()
 	defer os.Remove(tempName)
 
 	if _, err = tempFile.Write(data); err != nil {
-		_ = tempFile.Close()
-		return err
+		if closeErr := tempFile.Close(); closeErr != nil {
+			return fmt.Errorf("failed to write and close temp file: %w", errors.Join(err, closeErr))
+		}
+		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 	if err = tempFile.Chmod(0o644); err != nil {
-		_ = tempFile.Close()
-		return err
+		if closeErr := tempFile.Close(); closeErr != nil {
+			return fmt.Errorf("failed to chmod and close temp file: %w", errors.Join(err, closeErr))
+		}
+		return fmt.Errorf("failed to chmod temp file: %w", err)
 	}
 	if err = tempFile.Close(); err != nil {
-		return err
+		return fmt.Errorf("failed to close the temp file: %w", err)
 	}
 
-	return os.Rename(tempName, path)
+	if err = os.Rename(tempName, path); err != nil {
+		return fmt.Errorf("failed to replace storage file: %w", err)
+	}
+	return nil
 }
 
-func (s *MemStorage) LoadFromFile(path string) error {
+func (s *MemStorage) loadFromFile(path string) error {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return nil
 		}
-		return err
+		return fmt.Errorf("failed to read storage file: %w", err)
 	}
 
 	var metrics []models.Metrics
 	if err = json.Unmarshal(data, &metrics); err != nil {
-		return err
+		return fmt.Errorf("failed to unmarshal metrics: %w", err)
 	}
 
 	s.mu.Lock()

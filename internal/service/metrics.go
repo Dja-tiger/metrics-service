@@ -1,6 +1,10 @@
 package service
 
-import "github.com/Dja-tiger/metrics-service/internal/repository"
+import (
+	"time"
+
+	"github.com/Dja-tiger/metrics-service/internal/repository"
+)
 
 // MetricsService contains metric business logic.
 type MetricsService struct {
@@ -10,6 +14,12 @@ type MetricsService struct {
 
 func NewMetricsService(repo repository.MetricsRepository) *MetricsService {
 	return &MetricsService{repo: repo}
+}
+
+func NewMetricsServiceWithPersistence(repo repository.MetricsRepository, storage PersistentStorage, path string, interval time.Duration, handleError func(error)) *MetricsService {
+	service := NewMetricsService(repo)
+	configurePersistence(service, storage, path, interval, handleError)
+	return service
 }
 
 func (s *MetricsService) SetSaveOnUpdate(save func()) {

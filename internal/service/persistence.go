@@ -6,7 +6,7 @@ type PersistentStorage interface {
 	SaveToFile(path string) error
 }
 
-func ConfigurePersistence(service *MetricsService, storage PersistentStorage, path string, interval time.Duration, handleError func(error)) {
+func configurePersistence(service *MetricsService, storage PersistentStorage, path string, interval time.Duration, handleError func(error)) {
 	save := func() {
 		if err := storage.SaveToFile(path); err != nil && handleError != nil {
 			handleError(err)
