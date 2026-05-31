@@ -3,6 +3,7 @@ package service
 import (
 	"time"
 
+	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 )
 
@@ -33,6 +34,28 @@ func (s *MetricsService) UpdateGauge(name string, value float64) {
 
 func (s *MetricsService) UpdateCounter(name string, value int64) {
 	s.repo.UpdateCounter(name, value)
+	s.save()
+}
+
+func (s *MetricsService) UpdateMetrics(metrics []models.Metrics) {
+	if batchRepo, ok := s.repo.(repository.MetricsBatchRepository); ok {
+		batchRepo.UpdateMetrics(metrics)
+		s.save()
+		return
+	}
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case models.Gauge:
+			if metric.Value != nil {
+				s.repo.UpdateGauge(metric.ID, *metric.Value)
+			}
+		case models.Counter:
+			if metric.Delta != nil {
+				s.repo.UpdateCounter(metric.ID, *metric.Delta)
+			}
+		}
+	}
 	s.save()
 }
 

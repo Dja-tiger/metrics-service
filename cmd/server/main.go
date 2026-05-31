@@ -63,6 +63,8 @@ func main() {
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)
 	router.Post("/update", metricsHandler.UpdateMetricJSON)
 	router.Post("/update/", metricsHandler.UpdateMetricJSON)
+	router.Post("/updates", metricsHandler.UpdateMetricsJSON)
+	router.Post("/updates/", metricsHandler.UpdateMetricsJSON)
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Post("/value", metricsHandler.GetValueJSON)
 	router.Post("/value/", metricsHandler.GetValueJSON)

@@ -257,6 +257,89 @@ func TestUpdateMetricJSON(t *testing.T) {
 	}
 }
 
+func TestUpdateMetricsJSON(t *testing.T) {
+	gaugeValue := 42.5
+	counterDelta := int64(5)
+	tests := []struct {
+		name           string
+		body           []models.Metrics
+		wantStatusCode int
+	}{
+		{
+			name: "valid batch",
+			body: []models.Metrics{
+				{
+					ID:    "Alloc",
+					MType: models.Gauge,
+					Value: &gaugeValue,
+				},
+				{
+					ID:    "PollCount",
+					MType: models.Counter,
+					Delta: &counterDelta,
+				},
+			},
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name: "bad metric type",
+			body: []models.Metrics{
+				{
+					ID:    "Alloc",
+					MType: "bad",
+				},
+			},
+			wantStatusCode: http.StatusBadRequest,
+		},
+		{
+			name: "missing metric name",
+			body: []models.Metrics{
+				{
+					MType: models.Gauge,
+					Value: &gaugeValue,
+				},
+			},
+			wantStatusCode: http.StatusNotFound,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := repository.NewMemStorage()
+			svc := service.NewMetricsService(storage)
+			h := NewMetricsHandler(svc)
+
+			router := chi.NewRouter()
+			router.Post("/updates/", h.UpdateMetricsJSON)
+
+			payload, err := json.Marshal(tt.body)
+			if err != nil {
+				t.Fatalf("marshal payload: %v", err)
+			}
+
+			req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(payload))
+			req.Header.Set("Content-Type", "application/json")
+			rec := httptest.NewRecorder()
+			router.ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Fatalf("status code mismatch: got %d want %d", rec.Code, tt.wantStatusCode)
+			}
+
+			if tt.wantStatusCode != http.StatusOK {
+				return
+			}
+
+			if value, ok := storage.GetGauge("Alloc"); !ok || value != gaugeValue {
+				t.Fatalf("unexpected gauge value: got %v exists %t", value, ok)
+			}
+			if value, ok := storage.GetCounter("PollCount"); !ok || value != counterDelta {
+				t.Fatalf("unexpected counter value: got %v exists %t", value, ok)
+			}
+		})
+	}
+}
+
 func TestGetValueJSON(t *testing.T) {
 	storage := repository.NewMemStorage()
 	storage.UpdateGauge("Alloc", 12.34)

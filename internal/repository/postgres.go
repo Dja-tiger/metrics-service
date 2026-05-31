@@ -40,30 +40,70 @@ type PostgresStorage struct {
 	db *sql.DB
 }
 
+const upsertGaugeQuery = `
+	INSERT INTO metrics (id, type, gauge_value, counter_value)
+	VALUES ($1, $2, $3, NULL)
+	ON CONFLICT (id) DO UPDATE
+	SET type = EXCLUDED.type,
+	    gauge_value = EXCLUDED.gauge_value,
+	    counter_value = NULL
+`
+
+const upsertCounterQuery = `
+	INSERT INTO metrics (id, type, gauge_value, counter_value)
+	VALUES ($1, $2, NULL, $3)
+	ON CONFLICT (id) DO UPDATE
+	SET type = EXCLUDED.type,
+	    gauge_value = NULL,
+	    counter_value = COALESCE(metrics.counter_value, 0) + EXCLUDED.counter_value
+`
+
 func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 	return &PostgresStorage{db: db}
 }
 
 func (s *PostgresStorage) UpdateGauge(name string, value float64) {
-	_, _ = s.db.Exec(`
-		INSERT INTO metrics (id, type, gauge_value, counter_value)
-		VALUES ($1, $2, $3, NULL)
-		ON CONFLICT (id) DO UPDATE
-		SET type = EXCLUDED.type,
-		    gauge_value = EXCLUDED.gauge_value,
-		    counter_value = NULL
-	`, name, models.Gauge, value)
+	_, _ = s.db.Exec(upsertGaugeQuery, name, models.Gauge, value)
 }
 
 func (s *PostgresStorage) UpdateCounter(name string, value int64) {
-	_, _ = s.db.Exec(`
-		INSERT INTO metrics (id, type, gauge_value, counter_value)
-		VALUES ($1, $2, NULL, $3)
-		ON CONFLICT (id) DO UPDATE
-		SET type = EXCLUDED.type,
-		    gauge_value = NULL,
-		    counter_value = COALESCE(metrics.counter_value, 0) + EXCLUDED.counter_value
-	`, name, models.Counter, value)
+	_, _ = s.db.Exec(upsertCounterQuery, name, models.Counter, value)
+}
+
+func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	for _, metric := range metrics {
+		switch metric.MType {
+		case models.Gauge:
+			if metric.Value == nil {
+				continue
+			}
+			if _, err = tx.Exec(upsertGaugeQuery, metric.ID, models.Gauge, *metric.Value); err != nil {
+				return
+			}
+		case models.Counter:
+			if metric.Delta == nil {
+				continue
+			}
+			if _, err = tx.Exec(upsertCounterQuery, metric.ID, models.Counter, *metric.Delta); err != nil {
+				return
+			}
+		}
+	}
+
+	if err = tx.Commit(); err == nil {
+		committed = true
+	}
 }
 
 func (s *PostgresStorage) GetGauge(name string) (float64, bool) {

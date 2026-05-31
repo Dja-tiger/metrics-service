@@ -76,7 +76,7 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 
 	received := make(map[string]receivedMetric)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/update" {
+		if r.URL.Path != "/updates/" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Content-Type") != "application/json" {
@@ -86,17 +86,19 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 			t.Fatalf("unexpected content-encoding: %s", r.Header.Get("Content-Encoding"))
 		}
 
-		var metric receivedMetric
+		var metrics []receivedMetric
 		gzipReader, err := gzip.NewReader(r.Body)
 		if err != nil {
 			t.Fatalf("failed to create gzip reader: %v", err)
 		}
 		defer gzipReader.Close()
 
-		if err = json.NewDecoder(gzipReader).Decode(&metric); err != nil {
-			t.Fatalf("failed to decode metric body: %v", err)
+		if err = json.NewDecoder(gzipReader).Decode(&metrics); err != nil {
+			t.Fatalf("failed to decode metrics body: %v", err)
 		}
-		received[metric.MType+":"+metric.ID] = metric
+		for _, metric := range metrics {
+			received[metric.MType+":"+metric.ID] = metric
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -116,5 +118,24 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	counterMetric, ok := received["counter:TestCounter"]
 	if !ok || counterMetric.Delta == nil || *counterMetric.Delta != 7 {
 		t.Fatalf("expected counter metric with delta 7, got %#v", counterMetric)
+	}
+}
+
+func TestReportOnceSkipsEmptyBatch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), NewStore())
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+	a.ReportOnce()
+
+	if requests != 0 {
+		t.Fatalf("expected no requests for empty batch, got %d", requests)
 	}
 }
