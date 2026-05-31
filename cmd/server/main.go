@@ -33,10 +33,18 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
+	db, err := repository.NewPostgresDB(cfg.DatabaseDSN)
+	if err != nil {
+		log.Fatal(err)
+	}
+	if db != nil {
+		defer db.Close()
+	}
+
 	metricsService := service.NewMetricsServiceWithPersistence(storage, storage, cfg.FileStoragePath, time.Duration(cfg.StoreInterval)*time.Second, func(err error) {
 		logger.Info("save metrics failed", zap.Error(err))
 	})
-	metricsHandler := handler.NewMetricsHandler(metricsService)
+	metricsHandler := handler.NewMetricsHandlerWithDB(metricsService, db)
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
@@ -47,6 +55,7 @@ func main() {
 	router.Get("/value/{type}/{name}", metricsHandler.GetValue)
 	router.Post("/value", metricsHandler.GetValueJSON)
 	router.Post("/value/", metricsHandler.GetValueJSON)
+	router.Get("/ping", metricsHandler.Ping)
 	router.Get("/", metricsHandler.ListMetrics)
 
 	if err = http.ListenAndServe(cfg.Address, router); err != nil {

@@ -2,7 +2,9 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,6 +16,14 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 	"github.com/Dja-tiger/metrics-service/internal/service"
 )
+
+type fakeDB struct {
+	err error
+}
+
+func (db fakeDB) PingContext(ctx context.Context) error {
+	return db.err
+}
 
 func TestUpdateMetric(t *testing.T) {
 	tests := []struct {
@@ -327,6 +337,46 @@ func TestGetValueJSON(t *testing.T) {
 				if tt.check != nil {
 					tt.check(t, response)
 				}
+			}
+		})
+	}
+}
+
+func TestPing(t *testing.T) {
+	tests := []struct {
+		name           string
+		db             DatabasePinger
+		wantStatusCode int
+	}{
+		{
+			name:           "successful ping",
+			db:             fakeDB{},
+			wantStatusCode: http.StatusOK,
+		},
+		{
+			name:           "failed ping",
+			db:             fakeDB{err: errors.New("ping failed")},
+			wantStatusCode: http.StatusInternalServerError,
+		},
+		{
+			name:           "missing database",
+			db:             nil,
+			wantStatusCode: http.StatusInternalServerError,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			storage := repository.NewMemStorage()
+			svc := service.NewMetricsService(storage)
+			h := NewMetricsHandlerWithDB(svc, tt.db)
+
+			req := httptest.NewRequest(http.MethodGet, "/ping", nil)
+			rec := httptest.NewRecorder()
+			h.Ping(rec, req)
+
+			if rec.Code != tt.wantStatusCode {
+				t.Fatalf("status code mismatch: got %d want %d", rec.Code, tt.wantStatusCode)
 			}
 		})
 	}

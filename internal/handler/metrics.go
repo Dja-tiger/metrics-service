@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -22,13 +24,25 @@ type MetricsService interface {
 	GetAllCounters() map[string]int64
 }
 
+type DatabasePinger interface {
+	PingContext(ctx context.Context) error
+}
+
 // MetricsHandler handles HTTP requests for metrics.
 type MetricsHandler struct {
 	service MetricsService
+	db      DatabasePinger
 }
 
 func NewMetricsHandler(service MetricsService) *MetricsHandler {
 	return &MetricsHandler{service: service}
+}
+
+func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *MetricsHandler {
+	return &MetricsHandler{
+		service: service,
+		db:      db,
+	}
 }
 
 func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
@@ -194,6 +208,23 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 		log.Printf("render metrics page: %v", err)
 		w.WriteHeader(http.StatusInternalServerError)
 	}
+}
+
+func (h *MetricsHandler) Ping(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+
+	if err := h.db.PingContext(ctx); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
 }
 
 var metricsTemplate = template.Must(template.New("metrics").Parse(`

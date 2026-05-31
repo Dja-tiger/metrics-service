@@ -13,6 +13,7 @@ type ServerConfig struct {
 	StoreInterval   int
 	FileStoragePath string
 	Restore         bool
+	DatabaseDSN     string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -20,6 +21,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
 	restoreFlag := flag.Bool("r", true, "restore metrics from file storage")
+	databaseDSNFlag := flag.String("d", "", "PostgreSQL connection string")
 	flag.Parse()
 
 	cfg := ServerConfig{
@@ -27,6 +29,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		StoreInterval:   *storeIntervalFlag,
 		FileStoragePath: *fileStoragePathFlag,
 		Restore:         *restoreFlag,
+		DatabaseDSN:     *databaseDSNFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -48,6 +51,9 @@ func LoadServerConfig() (ServerConfig, error) {
 			return ServerConfig{}, fmt.Errorf("RESTORE must be boolean: %w", err)
 		}
 		cfg.Restore = parsed
+	}
+	if envDatabaseDSN, ok := os.LookupEnv("DATABASE_DSN"); ok {
+		cfg.DatabaseDSN = envDatabaseDSN
 	}
 
 	if cfg.StoreInterval < 0 {
