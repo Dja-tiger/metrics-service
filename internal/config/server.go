@@ -9,11 +9,12 @@ import (
 )
 
 type ServerConfig struct {
-	Address         string
-	StoreInterval   int
-	FileStoragePath string
-	Restore         bool
-	DatabaseDSN     string
+	Address            string
+	StoreInterval      int
+	FileStoragePath    string
+	FileStorageEnabled bool
+	Restore            bool
+	DatabaseDSN        string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -24,12 +25,20 @@ func LoadServerConfig() (ServerConfig, error) {
 	databaseDSNFlag := flag.String("d", "", "PostgreSQL connection string")
 	flag.Parse()
 
+	fileStorageFlagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "f" {
+			fileStorageFlagSet = true
+		}
+	})
+
 	cfg := ServerConfig{
-		Address:         *addrFlag,
-		StoreInterval:   *storeIntervalFlag,
-		FileStoragePath: *fileStoragePathFlag,
-		Restore:         *restoreFlag,
-		DatabaseDSN:     *databaseDSNFlag,
+		Address:            *addrFlag,
+		StoreInterval:      *storeIntervalFlag,
+		FileStoragePath:    *fileStoragePathFlag,
+		FileStorageEnabled: fileStorageFlagSet && *fileStoragePathFlag != "",
+		Restore:            *restoreFlag,
+		DatabaseDSN:        *databaseDSNFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -44,6 +53,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	}
 	if envFileStoragePath, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
 		cfg.FileStoragePath = envFileStoragePath
+		cfg.FileStorageEnabled = envFileStoragePath != ""
 	}
 	if envRestore, ok := os.LookupEnv("RESTORE"); ok {
 		parsed, err := strconv.ParseBool(envRestore)

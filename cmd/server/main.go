@@ -29,10 +29,6 @@ func main() {
 		log.Fatal(err)
 	}
 
-	storage, err := repository.NewMemStorageWithRestore(cfg.FileStoragePath, cfg.Restore)
-	if err != nil {
-		log.Fatal(err)
-	}
 	db, err := repository.NewPostgresDB(cfg.DatabaseDSN)
 	if err != nil {
 		log.Fatal(err)
@@ -41,9 +37,24 @@ func main() {
 		defer db.Close()
 	}
 
-	metricsService := service.NewMetricsServiceWithPersistence(storage, storage, cfg.FileStoragePath, time.Duration(cfg.StoreInterval)*time.Second, func(err error) {
-		logger.Info("save metrics failed", zap.Error(err))
-	})
+	var metricsService *service.MetricsService
+	if db != nil {
+		if err = repository.MigratePostgres(db); err != nil {
+			log.Fatal(err)
+		}
+		metricsService = service.NewMetricsService(repository.NewPostgresStorage(db))
+	} else if cfg.FileStorageEnabled {
+		storage, err := repository.NewMemStorageWithRestore(cfg.FileStoragePath, cfg.Restore)
+		if err != nil {
+			log.Fatal(err)
+		}
+		metricsService = service.NewMetricsServiceWithPersistence(storage, storage, cfg.FileStoragePath, time.Duration(cfg.StoreInterval)*time.Second, func(err error) {
+			logger.Info("save metrics failed", zap.Error(err))
+		})
+	} else {
+		metricsService = service.NewMetricsService(repository.NewMemStorage())
+	}
+
 	metricsHandler := handler.NewMetricsHandlerWithDB(metricsService, db)
 
 	router := chi.NewRouter()
