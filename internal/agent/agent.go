@@ -1,11 +1,13 @@
 package agent
 
 import (
+	"bytes"
+	"compress/gzip"
+	"encoding/json"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"runtime"
-	"strconv"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
@@ -85,12 +87,22 @@ func (a *Agent) PollOnce() {
 func (a *Agent) ReportOnce() {
 	gauges := a.store.SnapshotGauges()
 	for name, value := range gauges {
-		_ = a.sendMetric(models.Gauge, name, strconv.FormatFloat(value, 'f', -1, 64))
+		valueCopy := value
+		_ = a.sendMetric(models.Metrics{
+			ID:    name,
+			MType: models.Gauge,
+			Value: &valueCopy,
+		})
 	}
 
 	counters := a.store.SnapshotAndResetCounters()
 	for name, value := range counters {
-		_ = a.sendMetric(models.Counter, name, strconv.FormatInt(value, 10))
+		valueCopy := value
+		_ = a.sendMetric(models.Metrics{
+			ID:    name,
+			MType: models.Counter,
+			Delta: &valueCopy,
+		})
 	}
 }
 
@@ -114,13 +126,28 @@ func (a *Agent) ReportLoop() {
 	}
 }
 
-func (a *Agent) sendMetric(metricType, name, value string) error {
-	url := fmt.Sprintf("%s/update/%s/%s/%s", a.serverURL, metricType, name, value)
-	req, err := http.NewRequest(http.MethodPost, url, nil)
+func (a *Agent) sendMetric(metric models.Metrics) error {
+	body, err := json.Marshal(metric)
+	if err != nil {
+		return fmt.Errorf("marshal metric: %w", err)
+	}
+
+	var compressedBody bytes.Buffer
+	gzipWriter := gzip.NewWriter(&compressedBody)
+	if _, err = gzipWriter.Write(body); err != nil {
+		return fmt.Errorf("compress metric: %w", err)
+	}
+	if err = gzipWriter.Close(); err != nil {
+		return fmt.Errorf("close compressor: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/update", a.serverURL)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
-	req.Header.Set("Content-Type", "text/plain")
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Content-Encoding", "gzip")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
