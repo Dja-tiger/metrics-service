@@ -3,10 +3,16 @@ package agent
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	models "github.com/Dja-tiger/metrics-service/internal/model"
 )
 
 type receivedMetric struct {
@@ -14,6 +20,12 @@ type receivedMetric struct {
 	MType string   `json:"type"`
 	Delta *int64   `json:"delta,omitempty"`
 	Value *float64 `json:"value,omitempty"`
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
@@ -137,5 +149,52 @@ func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 
 	if requests != 0 {
 		t.Fatalf("expected no requests for empty batch, got %d", requests)
+	}
+}
+
+func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts < 4 {
+				return nil, errors.New("connection refused")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, client, NewStore())
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	var delays []time.Duration
+	a.retrySleep = func(delay time.Duration) {
+		delays = append(delays, delay)
+	}
+
+	value := 1.23
+	err = a.sendMetrics([]models.Metrics{
+		{
+			ID:    "TestGauge",
+			MType: models.Gauge,
+			Value: &value,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected send error: %v", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("unexpected attempts count: got %d want 4", attempts)
+	}
+
+	wantDelays := []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
+	if !reflect.DeepEqual(delays, wantDelays) {
+		t.Fatalf("unexpected delays: got %v want %v", delays, wantDelays)
 	}
 }

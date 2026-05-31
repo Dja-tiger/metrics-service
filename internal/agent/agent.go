@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -11,7 +12,10 @@ import (
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
+	"github.com/Dja-tiger/metrics-service/internal/retry"
 )
+
+var errRetriableSend = errors.New("retriable send error")
 
 // Agent collects runtime metrics and reports them via HTTP.
 type Agent struct {
@@ -20,6 +24,7 @@ type Agent struct {
 	serverURL      string
 	client         *http.Client
 	store          *Store
+	retrySleep     func(time.Duration)
 }
 
 func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store) (*Agent, error) {
@@ -45,6 +50,7 @@ func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, clie
 		serverURL:      serverURL,
 		client:         client,
 		store:          store,
+		retrySleep:     time.Sleep,
 	}, nil
 }
 
@@ -127,8 +133,14 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 		return fmt.Errorf("close compressor: %w", err)
 	}
 
+	return retry.DoWithSleeper(func() error {
+		return a.sendCompressedMetrics(compressedBody.Bytes())
+	}, isRetriableSendError, a.retrySleep)
+}
+
+func (a *Agent) sendCompressedMetrics(body []byte) error {
 	url := fmt.Sprintf("%s/updates/", a.serverURL)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
@@ -138,7 +150,7 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("send request: %w", err)
+		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
 	defer resp.Body.Close()
 
@@ -147,4 +159,8 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 	}
 
 	return nil
+}
+
+func isRetriableSendError(err error) bool {
+	return errors.Is(err, errRetriableSend)
 }
