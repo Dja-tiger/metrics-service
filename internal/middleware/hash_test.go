@@ -74,6 +74,32 @@ func TestHashSHA256RejectsInvalidRequest(t *testing.T) {
 	}
 }
 
+func TestHashSHA256AllowsUnsignedRequest(t *testing.T) {
+	key := "secret"
+	responseBody := []byte(`{"status":"ok"}`)
+
+	handler := HashSHA256(key)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(responseBody)
+	}))
+
+	req := httptest.NewRequest(http.MethodPost, "/value/", bytes.NewReader([]byte(`{"id":"Alloc","type":"gauge"}`)))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code mismatch: got %d want %d", rec.Code, http.StatusOK)
+	}
+	if rec.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("unexpected content-type: %q", rec.Header().Get("Content-Type"))
+	}
+	if !signature.Verify(responseBody, key, rec.Header().Get(signature.Header)) {
+		t.Fatal("response signature is invalid")
+	}
+}
+
 func TestHashSHA256DisabledWithoutKey(t *testing.T) {
 	handler := HashSHA256("")(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)

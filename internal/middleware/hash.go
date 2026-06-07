@@ -17,7 +17,7 @@ func HashSHA256(key string) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			responseWriter := newHashResponseWriter(w)
 
-			if requestRequiresSignature(r.Method) {
+			if requestRequiresSignature(r.Method) && r.Header.Get(signature.Header) != "" {
 				if !verifyRequestSignature(r, key) {
 					responseWriter.WriteHeader(http.StatusBadRequest)
 					responseWriter.flush(key)
@@ -39,8 +39,7 @@ func verifyRequestSignature(r *http.Request, key string) bool {
 	}
 	r.Body = io.NopCloser(bytes.NewReader(body))
 
-	hash := r.Header.Get(signature.Header)
-	return hash != "" && signature.Verify(body, key, hash)
+	return signature.Verify(body, key, r.Header.Get(signature.Header))
 }
 
 func requestRequiresSignature(method string) bool {
