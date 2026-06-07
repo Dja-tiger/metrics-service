@@ -12,18 +12,21 @@ type AgentConfig struct {
 	Address        string
 	ReportInterval int
 	PollInterval   int
+	Key            string
 }
 
 func LoadAgentConfig() (AgentConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	reportIntervalFlag := flag.Int("r", 10, "report interval in seconds")
 	pollIntervalFlag := flag.Int("p", 2, "poll interval in seconds")
+	keyFlag := flag.String("k", "", "SHA256 signing key")
 	flag.Parse()
 
 	cfg := AgentConfig{
 		Address:        *addrFlag,
 		ReportInterval: *reportIntervalFlag,
 		PollInterval:   *pollIntervalFlag,
+		Key:            *keyFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -42,6 +45,9 @@ func LoadAgentConfig() (AgentConfig, error) {
 			return AgentConfig{}, err
 		}
 		cfg.PollInterval = parsed
+	}
+	if envKey, ok := os.LookupEnv("KEY"); ok {
+		cfg.Key = envKey
 	}
 
 	if cfg.PollInterval <= 0 {

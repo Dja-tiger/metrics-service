@@ -13,6 +13,7 @@ import (
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
+	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
 
 type receivedMetric struct {
@@ -131,6 +132,38 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	if !ok || counterMetric.Delta == nil || *counterMetric.Delta != 7 {
 		t.Fatalf("expected counter metric with delta 7, got %#v", counterMetric)
 	}
+}
+
+func TestReportOnceSignsRequest(t *testing.T) {
+	const key = "secret"
+
+	store := NewStore()
+	store.SetGauge("TestGauge", 12.34)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer gzipReader.Close()
+
+		body, err := io.ReadAll(gzipReader)
+		if err != nil {
+			t.Fatalf("failed to read metric body: %v", err)
+		}
+		if !signature.Verify(body, key, r.Header.Get(signature.Header)) {
+			t.Fatal("request signature is invalid")
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a, err := NewAgentWithKey(server.URL, time.Second, time.Second, server.Client(), store, key)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+	a.ReportOnce()
 }
 
 func TestReportOnceSkipsEmptyBatch(t *testing.T) {

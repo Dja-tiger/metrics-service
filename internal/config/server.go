@@ -15,6 +15,7 @@ type ServerConfig struct {
 	FileStorageEnabled bool
 	Restore            bool
 	DatabaseDSN        string
+	Key                string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -23,6 +24,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
 	restoreFlag := flag.Bool("r", true, "restore metrics from file storage")
 	databaseDSNFlag := flag.String("d", "", "PostgreSQL connection string")
+	keyFlag := flag.String("k", "", "SHA256 signing key")
 	flag.Parse()
 
 	fileStorageFlagSet := false
@@ -39,6 +41,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		FileStorageEnabled: fileStorageFlagSet && *fileStoragePathFlag != "",
 		Restore:            *restoreFlag,
 		DatabaseDSN:        *databaseDSNFlag,
+		Key:                *keyFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -64,6 +67,9 @@ func LoadServerConfig() (ServerConfig, error) {
 	}
 	if envDatabaseDSN, ok := os.LookupEnv("DATABASE_DSN"); ok {
 		cfg.DatabaseDSN = envDatabaseDSN
+	}
+	if envKey, ok := os.LookupEnv("KEY"); ok {
+		cfg.Key = envKey
 	}
 
 	if cfg.StoreInterval < 0 {

@@ -13,6 +13,7 @@ import (
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/retry"
+	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
 
 var errRetriableSend = errors.New("retriable send error")
@@ -24,10 +25,15 @@ type Agent struct {
 	serverURL      string
 	client         *http.Client
 	store          *Store
+	key            string
 	retrySleep     func(time.Duration)
 }
 
 func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store) (*Agent, error) {
+	return NewAgentWithKey(serverURL, pollInterval, reportInterval, client, store, "")
+}
+
+func NewAgentWithKey(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store, key string) (*Agent, error) {
 	if serverURL == "" {
 		return nil, fmt.Errorf("server URL is required")
 	}
@@ -50,6 +56,7 @@ func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, clie
 		serverURL:      serverURL,
 		client:         client,
 		store:          store,
+		key:            key,
 		retrySleep:     time.Sleep,
 	}, nil
 }
@@ -133,12 +140,17 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 		return fmt.Errorf("close compressor: %w", err)
 	}
 
+	hash := ""
+	if a.key != "" {
+		hash = signature.Calculate(body, a.key)
+	}
+
 	return retry.DoWithSleeper(func() error {
-		return a.sendCompressedMetrics(compressedBody.Bytes())
+		return a.sendCompressedMetrics(compressedBody.Bytes(), hash)
 	}, isRetriableSendError, a.retrySleep)
 }
 
-func (a *Agent) sendCompressedMetrics(body []byte) error {
+func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 	url := fmt.Sprintf("%s/updates/", a.serverURL)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -147,6 +159,9 @@ func (a *Agent) sendCompressedMetrics(body []byte) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if hash != "" {
+		req.Header.Set(signature.Header, hash)
+	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {
