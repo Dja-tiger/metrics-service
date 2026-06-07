@@ -3,10 +3,16 @@ package agent
 import (
 	"compress/gzip"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	models "github.com/Dja-tiger/metrics-service/internal/model"
 )
 
 type receivedMetric struct {
@@ -14,6 +20,12 @@ type receivedMetric struct {
 	MType string   `json:"type"`
 	Delta *int64   `json:"delta,omitempty"`
 	Value *float64 `json:"value,omitempty"`
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
+	return fn(r)
 }
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
@@ -76,7 +88,7 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 
 	received := make(map[string]receivedMetric)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/update" {
+		if r.URL.Path != "/updates/" {
 			t.Fatalf("unexpected path: %s", r.URL.Path)
 		}
 		if r.Header.Get("Content-Type") != "application/json" {
@@ -86,17 +98,19 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 			t.Fatalf("unexpected content-encoding: %s", r.Header.Get("Content-Encoding"))
 		}
 
-		var metric receivedMetric
+		var metrics []receivedMetric
 		gzipReader, err := gzip.NewReader(r.Body)
 		if err != nil {
 			t.Fatalf("failed to create gzip reader: %v", err)
 		}
 		defer gzipReader.Close()
 
-		if err = json.NewDecoder(gzipReader).Decode(&metric); err != nil {
-			t.Fatalf("failed to decode metric body: %v", err)
+		if err = json.NewDecoder(gzipReader).Decode(&metrics); err != nil {
+			t.Fatalf("failed to decode metrics body: %v", err)
 		}
-		received[metric.MType+":"+metric.ID] = metric
+		for _, metric := range metrics {
+			received[metric.MType+":"+metric.ID] = metric
+		}
 
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -116,5 +130,71 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	counterMetric, ok := received["counter:TestCounter"]
 	if !ok || counterMetric.Delta == nil || *counterMetric.Delta != 7 {
 		t.Fatalf("expected counter metric with delta 7, got %#v", counterMetric)
+	}
+}
+
+func TestReportOnceSkipsEmptyBatch(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), NewStore())
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+	a.ReportOnce()
+
+	if requests != 0 {
+		t.Fatalf("expected no requests for empty batch, got %d", requests)
+	}
+}
+
+func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
+	attempts := 0
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			attempts++
+			if attempts < 4 {
+				return nil, errors.New("connection refused")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, client, NewStore())
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	var delays []time.Duration
+	a.retrySleep = func(delay time.Duration) {
+		delays = append(delays, delay)
+	}
+
+	value := 1.23
+	err = a.sendMetrics([]models.Metrics{
+		{
+			ID:    "TestGauge",
+			MType: models.Gauge,
+			Value: &value,
+		},
+	})
+	if err != nil {
+		t.Fatalf("unexpected send error: %v", err)
+	}
+	if attempts != 4 {
+		t.Fatalf("unexpected attempts count: got %d want 4", attempts)
+	}
+
+	wantDelays := []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
+	if !reflect.DeepEqual(delays, wantDelays) {
+		t.Fatalf("unexpected delays: got %v want %v", delays, wantDelays)
 	}
 }

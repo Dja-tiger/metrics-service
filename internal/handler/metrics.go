@@ -1,11 +1,13 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"html/template"
 	"log"
 	"net/http"
 	"strconv"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 
@@ -16,19 +18,32 @@ import (
 type MetricsService interface {
 	UpdateGauge(name string, value float64)
 	UpdateCounter(name string, value int64)
+	UpdateMetrics(metrics []models.Metrics)
 	GetGauge(name string) (float64, bool)
 	GetCounter(name string) (int64, bool)
 	GetAllGauges() map[string]float64
 	GetAllCounters() map[string]int64
 }
 
+type DatabasePinger interface {
+	PingContext(ctx context.Context) error
+}
+
 // MetricsHandler handles HTTP requests for metrics.
 type MetricsHandler struct {
 	service MetricsService
+	db      DatabasePinger
 }
 
 func NewMetricsHandler(service MetricsService) *MetricsHandler {
 	return &MetricsHandler{service: service}
+}
+
+func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *MetricsHandler {
+	return &MetricsHandler{
+		service: service,
+		db:      db,
+	}
 }
 
 func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
@@ -74,32 +89,40 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if metric.ID == "" {
-		w.WriteHeader(http.StatusNotFound)
+	if statusCode := validateUpdateMetric(metric); statusCode != http.StatusOK {
+		w.WriteHeader(statusCode)
 		return
 	}
 
-	switch metric.MType {
-	case models.Gauge:
-		if metric.Value == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		h.service.UpdateGauge(metric.ID, *metric.Value)
-	case models.Counter:
-		if metric.Delta == nil {
-			w.WriteHeader(http.StatusBadRequest)
-			return
-		}
-		h.service.UpdateCounter(metric.ID, *metric.Delta)
-	default:
-		w.WriteHeader(http.StatusBadRequest)
-		return
-	}
+	h.service.UpdateMetrics([]models.Metrics{metric})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
 		log.Printf("encode update response: %v", err)
+	}
+}
+
+func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
+	var metrics []models.Metrics
+	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	for _, metric := range metrics {
+		if statusCode := validateUpdateMetric(metric); statusCode != http.StatusOK {
+			w.WriteHeader(statusCode)
+			return
+		}
+	}
+
+	if len(metrics) > 0 {
+		h.service.UpdateMetrics(metrics)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(metrics); err != nil {
+		log.Printf("encode batch update response: %v", err)
 	}
 }
 
@@ -196,6 +219,23 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (h *MetricsHandler) Ping(w http.ResponseWriter, r *http.Request) {
+	if h.db == nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), time.Second)
+	defer cancel()
+
+	if err := h.db.PingContext(ctx); err != nil {
+		w.WriteHeader(http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+}
+
 var metricsTemplate = template.Must(template.New("metrics").Parse(`
 <html>
   <body>
@@ -210,3 +250,24 @@ var metricsTemplate = template.Must(template.New("metrics").Parse(`
   </body>
 </html>
 `))
+
+func validateUpdateMetric(metric models.Metrics) int {
+	if metric.ID == "" {
+		return http.StatusNotFound
+	}
+
+	switch metric.MType {
+	case models.Gauge:
+		if metric.Value == nil {
+			return http.StatusBadRequest
+		}
+	case models.Counter:
+		if metric.Delta == nil {
+			return http.StatusBadRequest
+		}
+	default:
+		return http.StatusBadRequest
+	}
+
+	return http.StatusOK
+}

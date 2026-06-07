@@ -1,6 +1,10 @@
 package agent
 
-import "sync"
+import (
+	"sync"
+
+	models "github.com/Dja-tiger/metrics-service/internal/model"
+)
 
 // Store keeps metrics collected by the agent.
 type Store struct {
@@ -49,4 +53,29 @@ func (s *Store) SnapshotAndResetCounters() map[string]int64 {
 		s.counters[k] = 0
 	}
 	return copyMap
+}
+
+func (s *Store) SnapshotMetrics() []models.Metrics {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	metrics := make([]models.Metrics, 0, len(s.gauges)+len(s.counters))
+	for name, value := range s.gauges {
+		valueCopy := value
+		metrics = append(metrics, models.Metrics{
+			ID:    name,
+			MType: models.Gauge,
+			Value: &valueCopy,
+		})
+	}
+	for name, value := range s.counters {
+		valueCopy := value
+		metrics = append(metrics, models.Metrics{
+			ID:    name,
+			MType: models.Counter,
+			Delta: &valueCopy,
+		})
+		delete(s.counters, name)
+	}
+	return metrics
 }

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
@@ -11,7 +12,10 @@ import (
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
+	"github.com/Dja-tiger/metrics-service/internal/retry"
 )
+
+var errRetriableSend = errors.New("retriable send error")
 
 // Agent collects runtime metrics and reports them via HTTP.
 type Agent struct {
@@ -20,6 +24,7 @@ type Agent struct {
 	serverURL      string
 	client         *http.Client
 	store          *Store
+	retrySleep     func(time.Duration)
 }
 
 func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store) (*Agent, error) {
@@ -45,6 +50,7 @@ func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, clie
 		serverURL:      serverURL,
 		client:         client,
 		store:          store,
+		retrySleep:     time.Sleep,
 	}, nil
 }
 
@@ -85,25 +91,7 @@ func (a *Agent) PollOnce() {
 }
 
 func (a *Agent) ReportOnce() {
-	gauges := a.store.SnapshotGauges()
-	for name, value := range gauges {
-		valueCopy := value
-		_ = a.sendMetric(models.Metrics{
-			ID:    name,
-			MType: models.Gauge,
-			Value: &valueCopy,
-		})
-	}
-
-	counters := a.store.SnapshotAndResetCounters()
-	for name, value := range counters {
-		valueCopy := value
-		_ = a.sendMetric(models.Metrics{
-			ID:    name,
-			MType: models.Counter,
-			Delta: &valueCopy,
-		})
-	}
+	_ = a.sendMetrics(a.store.SnapshotMetrics())
 }
 
 func (a *Agent) PollLoop() {
@@ -126,34 +114,53 @@ func (a *Agent) ReportLoop() {
 	}
 }
 
-func (a *Agent) sendMetric(metric models.Metrics) error {
-	body, err := json.Marshal(metric)
+func (a *Agent) sendMetrics(metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+
+	body, err := json.Marshal(metrics)
 	if err != nil {
-		return fmt.Errorf("marshal metric: %w", err)
+		return fmt.Errorf("marshal metrics: %w", err)
 	}
 
 	var compressedBody bytes.Buffer
 	gzipWriter := gzip.NewWriter(&compressedBody)
 	if _, err = gzipWriter.Write(body); err != nil {
-		return fmt.Errorf("compress metric: %w", err)
+		return fmt.Errorf("compress metrics: %w", err)
 	}
 	if err = gzipWriter.Close(); err != nil {
 		return fmt.Errorf("close compressor: %w", err)
 	}
 
-	url := fmt.Sprintf("%s/update", a.serverURL)
-	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(compressedBody.Bytes()))
+	return retry.DoWithSleeper(func() error {
+		return a.sendCompressedMetrics(compressedBody.Bytes())
+	}, isRetriableSendError, a.retrySleep)
+}
+
+func (a *Agent) sendCompressedMetrics(body []byte) error {
+	url := fmt.Sprintf("%s/updates/", a.serverURL)
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
+	req.Header.Set("Accept-Encoding", "gzip")
 
 	resp, err := a.client.Do(req)
 	if err != nil {
-		return fmt.Errorf("send request: %w", err)
+		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
 	defer resp.Body.Close()
 
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)
+	}
+
 	return nil
+}
+
+func isRetriableSendError(err error) bool {
+	return errors.Is(err, errRetriableSend)
 }

@@ -9,10 +9,12 @@ import (
 )
 
 type ServerConfig struct {
-	Address         string
-	StoreInterval   int
-	FileStoragePath string
-	Restore         bool
+	Address            string
+	StoreInterval      int
+	FileStoragePath    string
+	FileStorageEnabled bool
+	Restore            bool
+	DatabaseDSN        string
 }
 
 func LoadServerConfig() (ServerConfig, error) {
@@ -20,13 +22,23 @@ func LoadServerConfig() (ServerConfig, error) {
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
 	restoreFlag := flag.Bool("r", true, "restore metrics from file storage")
+	databaseDSNFlag := flag.String("d", "", "PostgreSQL connection string")
 	flag.Parse()
 
+	fileStorageFlagSet := false
+	flag.Visit(func(f *flag.Flag) {
+		if f.Name == "f" {
+			fileStorageFlagSet = true
+		}
+	})
+
 	cfg := ServerConfig{
-		Address:         *addrFlag,
-		StoreInterval:   *storeIntervalFlag,
-		FileStoragePath: *fileStoragePathFlag,
-		Restore:         *restoreFlag,
+		Address:            *addrFlag,
+		StoreInterval:      *storeIntervalFlag,
+		FileStoragePath:    *fileStoragePathFlag,
+		FileStorageEnabled: fileStorageFlagSet && *fileStoragePathFlag != "",
+		Restore:            *restoreFlag,
+		DatabaseDSN:        *databaseDSNFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -41,6 +53,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	}
 	if envFileStoragePath, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
 		cfg.FileStoragePath = envFileStoragePath
+		cfg.FileStorageEnabled = envFileStoragePath != ""
 	}
 	if envRestore, ok := os.LookupEnv("RESTORE"); ok {
 		parsed, err := strconv.ParseBool(envRestore)
@@ -48,6 +61,9 @@ func LoadServerConfig() (ServerConfig, error) {
 			return ServerConfig{}, fmt.Errorf("RESTORE must be boolean: %w", err)
 		}
 		cfg.Restore = parsed
+	}
+	if envDatabaseDSN, ok := os.LookupEnv("DATABASE_DSN"); ok {
+		cfg.DatabaseDSN = envDatabaseDSN
 	}
 
 	if cfg.StoreInterval < 0 {
