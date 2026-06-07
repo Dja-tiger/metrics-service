@@ -1,0 +1,42 @@
+package agent
+
+import (
+	"errors"
+	"fmt"
+	"time"
+
+	"github.com/shirou/gopsutil/v4/cpu"
+	"github.com/shirou/gopsutil/v4/mem"
+)
+
+var (
+	readVirtualMemory = mem.VirtualMemory
+	readCPUPercent    = cpu.Percent
+)
+
+func (a *Agent) PollSystemOnce() error {
+	memoryStats, memoryErr := readVirtualMemory()
+	if memoryErr == nil {
+		a.store.SetGauge("TotalMemory", float64(memoryStats.Total))
+		a.store.SetGauge("FreeMemory", float64(memoryStats.Free))
+	}
+
+	cpuUtilization, cpuErr := readCPUPercent(0, true)
+	if cpuErr == nil {
+		for index, value := range cpuUtilization {
+			a.store.SetGauge(fmt.Sprintf("CPUutilization%d", index+1), value)
+		}
+	}
+
+	return errors.Join(memoryErr, cpuErr)
+}
+
+func (a *Agent) SystemPollLoop() {
+	ticker := time.NewTicker(a.pollInterval)
+	defer ticker.Stop()
+
+	_ = a.PollSystemOnce()
+	for range ticker.C {
+		_ = a.PollSystemOnce()
+	}
+}

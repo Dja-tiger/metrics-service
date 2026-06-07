@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -229,5 +230,77 @@ func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 	wantDelays := []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
 	if !reflect.DeepEqual(delays, wantDelays) {
 		t.Fatalf("unexpected delays: got %v want %v", delays, wantDelays)
+	}
+}
+
+func TestReportWorkersRespectRateLimit(t *testing.T) {
+	const rateLimit = 2
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			current := active.Add(1)
+			for {
+				previous := maximum.Load()
+				if current <= previous || maximum.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+
+			time.Sleep(20 * time.Millisecond)
+			active.Add(-1)
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgentWithKeyAndRateLimit(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		client,
+		NewStore(),
+		"",
+		rateLimit,
+	)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	jobs := make(chan []models.Metrics, 6)
+	workers := a.startReportWorkers(jobs)
+	for index := range 6 {
+		value := float64(index)
+		jobs <- []models.Metrics{{
+			ID:    "TestGauge",
+			MType: models.Gauge,
+			Value: &value,
+		}}
+	}
+	close(jobs)
+	workers.Wait()
+
+	if got := maximum.Load(); got != rateLimit {
+		t.Fatalf("unexpected maximum concurrency: got %d want %d", got, rateLimit)
+	}
+}
+
+func TestNewAgentRejectsInvalidRateLimit(t *testing.T) {
+	_, err := NewAgentWithKeyAndRateLimit(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		nil,
+		nil,
+		"",
+		0,
+	)
+	if err == nil {
+		t.Fatal("expected rate limit validation error")
 	}
 }

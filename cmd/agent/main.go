@@ -15,18 +15,20 @@ func main() {
 	}
 
 	store := agent.NewStore()
-	metricsAgent, err := agent.NewAgentWithKey(
+	metricsAgent, err := agent.NewAgentWithKeyAndRateLimit(
 		cfg.Address,
 		time.Duration(cfg.PollInterval)*time.Second,
 		time.Duration(cfg.ReportInterval)*time.Second,
 		nil,
 		store,
 		cfg.Key,
+		cfg.RateLimit,
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
 	go metricsAgent.PollLoop()
+	go metricsAgent.SystemPollLoop()
 	metricsAgent.ReportLoop()
 }

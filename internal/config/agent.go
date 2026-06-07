@@ -12,6 +12,7 @@ type AgentConfig struct {
 	Address        string
 	ReportInterval int
 	PollInterval   int
+	RateLimit      int
 	Key            string
 }
 
@@ -19,6 +20,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	reportIntervalFlag := flag.Int("r", 10, "report interval in seconds")
 	pollIntervalFlag := flag.Int("p", 2, "poll interval in seconds")
+	rateLimitFlag := flag.Int("l", 1, "maximum number of concurrent requests")
 	keyFlag := flag.String("k", "", "SHA256 signing key")
 	flag.Parse()
 
@@ -26,6 +28,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 		Address:        *addrFlag,
 		ReportInterval: *reportIntervalFlag,
 		PollInterval:   *pollIntervalFlag,
+		RateLimit:      *rateLimitFlag,
 		Key:            *keyFlag,
 	}
 
@@ -49,12 +52,22 @@ func LoadAgentConfig() (AgentConfig, error) {
 	if envKey, ok := os.LookupEnv("KEY"); ok {
 		cfg.Key = envKey
 	}
+	if envRateLimit, ok := os.LookupEnv("RATE_LIMIT"); ok {
+		parsed, err := strconv.Atoi(envRateLimit)
+		if err != nil {
+			return AgentConfig{}, fmt.Errorf("RATE_LIMIT must be an integer: %w", err)
+		}
+		cfg.RateLimit = parsed
+	}
 
 	if cfg.PollInterval <= 0 {
 		return AgentConfig{}, fmt.Errorf("poll interval must be positive")
 	}
 	if cfg.ReportInterval <= 0 {
 		return AgentConfig{}, fmt.Errorf("report interval must be positive")
+	}
+	if cfg.RateLimit <= 0 {
+		return AgentConfig{}, fmt.Errorf("rate limit must be positive")
 	}
 
 	cfg.Address = normalizeServerURL(cfg.Address)

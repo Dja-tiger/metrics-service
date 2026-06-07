@@ -9,6 +9,7 @@ import (
 	"math/rand"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
@@ -26,6 +27,7 @@ type Agent struct {
 	client         *http.Client
 	store          *Store
 	key            string
+	rateLimit      int
 	retrySleep     func(time.Duration)
 }
 
@@ -34,6 +36,10 @@ func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, clie
 }
 
 func NewAgentWithKey(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store, key string) (*Agent, error) {
+	return NewAgentWithKeyAndRateLimit(serverURL, pollInterval, reportInterval, client, store, key, 1)
+}
+
+func NewAgentWithKeyAndRateLimit(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store, key string, rateLimit int) (*Agent, error) {
 	if serverURL == "" {
 		return nil, fmt.Errorf("server URL is required")
 	}
@@ -42,6 +48,9 @@ func NewAgentWithKey(serverURL string, pollInterval, reportInterval time.Duratio
 	}
 	if reportInterval <= 0 {
 		return nil, fmt.Errorf("report interval must be positive")
+	}
+	if rateLimit <= 0 {
+		return nil, fmt.Errorf("rate limit must be positive")
 	}
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
@@ -57,6 +66,7 @@ func NewAgentWithKey(serverURL string, pollInterval, reportInterval time.Duratio
 		client:         client,
 		store:          store,
 		key:            key,
+		rateLimit:      rateLimit,
 		retrySleep:     time.Sleep,
 	}, nil
 }
@@ -112,13 +122,40 @@ func (a *Agent) PollLoop() {
 }
 
 func (a *Agent) ReportLoop() {
+	jobs := make(chan []models.Metrics, a.rateLimit)
+	a.startReportWorkers(jobs)
+
 	ticker := time.NewTicker(a.reportInterval)
 	defer ticker.Stop()
 
-	a.ReportOnce()
+	a.enqueueReport(jobs)
 	for range ticker.C {
-		a.ReportOnce()
+		a.enqueueReport(jobs)
 	}
+}
+
+func (a *Agent) enqueueReport(jobs chan<- []models.Metrics) {
+	metrics := a.store.SnapshotMetrics()
+	if len(metrics) == 0 {
+		return
+	}
+	jobs <- metrics
+}
+
+func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup {
+	var workers sync.WaitGroup
+	workers.Add(a.rateLimit)
+
+	for range a.rateLimit {
+		go func() {
+			defer workers.Done()
+			for metrics := range jobs {
+				_ = a.sendMetrics(metrics)
+			}
+		}()
+	}
+
+	return &workers
 }
 
 func (a *Agent) sendMetrics(metrics []models.Metrics) error {
