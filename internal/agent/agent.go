@@ -3,16 +3,19 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand"
 	"net/http"
 	"runtime"
+	"sync"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/retry"
+	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
 
 var errRetriableSend = errors.New("retriable send error")
@@ -24,34 +27,87 @@ type Agent struct {
 	serverURL      string
 	client         *http.Client
 	store          *Store
+	key            string
+	rateLimit      int
 	retrySleep     func(time.Duration)
 }
 
-func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store) (*Agent, error) {
-	if serverURL == "" {
-		return nil, fmt.Errorf("server URL is required")
-	}
-	if pollInterval <= 0 {
-		return nil, fmt.Errorf("poll interval must be positive")
-	}
-	if reportInterval <= 0 {
-		return nil, fmt.Errorf("report interval must be positive")
-	}
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
-	}
-	if store == nil {
-		store = NewStore()
-	}
+type Option func(*Agent)
 
-	return &Agent{
+func WithHTTPClient(client *http.Client) Option {
+	return func(a *Agent) {
+		if client != nil {
+			a.client = client
+		}
+	}
+}
+
+func WithStore(store *Store) Option {
+	return func(a *Agent) {
+		if store != nil {
+			a.store = store
+		}
+	}
+}
+
+func WithKey(key string) Option {
+	return func(a *Agent) {
+		a.key = key
+	}
+}
+
+func WithRateLimit(rateLimit int) Option {
+	return func(a *Agent) {
+		a.rateLimit = rateLimit
+	}
+}
+
+func WithRetrySleep(sleep func(time.Duration)) Option {
+	return func(a *Agent) {
+		if sleep != nil {
+			a.retrySleep = sleep
+		}
+	}
+}
+
+func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, options ...Option) (*Agent, error) {
+	agent := &Agent{
 		pollInterval:   pollInterval,
 		reportInterval: reportInterval,
 		serverURL:      serverURL,
-		client:         client,
-		store:          store,
+		client:         &http.Client{Timeout: 5 * time.Second},
+		store:          NewStore(),
+		rateLimit:      1,
 		retrySleep:     time.Sleep,
-	}, nil
+	}
+
+	for _, option := range options {
+		if option != nil {
+			option(agent)
+		}
+	}
+
+	if err := agent.validate(); err != nil {
+		return nil, err
+	}
+
+	return agent, nil
+}
+
+func (a *Agent) validate() error {
+	if a.serverURL == "" {
+		return fmt.Errorf("server URL is required")
+	}
+	if a.pollInterval <= 0 {
+		return fmt.Errorf("poll interval must be positive")
+	}
+	if a.reportInterval <= 0 {
+		return fmt.Errorf("report interval must be positive")
+	}
+	if a.rateLimit <= 0 {
+		return fmt.Errorf("rate limit must be positive")
+	}
+	return nil
 }
 
 func (a *Agent) PollOnce() {
@@ -94,24 +150,69 @@ func (a *Agent) ReportOnce() {
 	_ = a.sendMetrics(a.store.SnapshotMetrics())
 }
 
-func (a *Agent) PollLoop() {
+func (a *Agent) PollLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 
 	a.PollOnce()
-	for range ticker.C {
-		a.PollOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.PollOnce()
+		}
 	}
 }
 
-func (a *Agent) ReportLoop() {
+func (a *Agent) ReportLoop(ctx context.Context) {
+	jobs := make(chan []models.Metrics, a.rateLimit)
+	workers := a.startReportWorkers(jobs)
+	defer func() {
+		close(jobs)
+		workers.Wait()
+	}()
+
 	ticker := time.NewTicker(a.reportInterval)
 	defer ticker.Stop()
 
-	a.ReportOnce()
-	for range ticker.C {
-		a.ReportOnce()
+	a.enqueueReport(ctx, jobs)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.enqueueReport(ctx, jobs)
+		}
 	}
+}
+
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- []models.Metrics) {
+	metrics := a.store.SnapshotMetrics()
+	if len(metrics) == 0 {
+		return
+	}
+
+	select {
+	case jobs <- metrics:
+	case <-ctx.Done():
+	}
+}
+
+func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup {
+	var workers sync.WaitGroup
+	workers.Add(a.rateLimit)
+
+	for range a.rateLimit {
+		go func() {
+			defer workers.Done()
+			for metrics := range jobs {
+				_ = a.sendMetrics(metrics)
+			}
+		}()
+	}
+
+	return &workers
 }
 
 func (a *Agent) sendMetrics(metrics []models.Metrics) error {
@@ -133,12 +234,17 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 		return fmt.Errorf("close compressor: %w", err)
 	}
 
+	hash := ""
+	if a.key != "" {
+		hash = signature.Calculate(body, a.key)
+	}
+
 	return retry.DoWithSleeper(func() error {
-		return a.sendCompressedMetrics(compressedBody.Bytes())
+		return a.sendCompressedMetrics(compressedBody.Bytes(), hash)
 	}, isRetriableSendError, a.retrySleep)
 }
 
-func (a *Agent) sendCompressedMetrics(body []byte) error {
+func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 	url := fmt.Sprintf("%s/updates/", a.serverURL)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -147,6 +253,9 @@ func (a *Agent) sendCompressedMetrics(body []byte) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if hash != "" {
+		req.Header.Set(signature.Header, hash)
+	}
 
 	resp, err := a.client.Do(req)
 	if err != nil {

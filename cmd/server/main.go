@@ -60,6 +60,7 @@ func main() {
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
 	router.Use(appmiddleware.Gzip)
+	router.Use(appmiddleware.HashSHA256(cfg.Key))
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)
 	router.Post("/update", metricsHandler.UpdateMetricJSON)
 	router.Post("/update/", metricsHandler.UpdateMetricJSON)

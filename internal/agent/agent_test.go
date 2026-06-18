@@ -2,6 +2,7 @@ package agent
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -9,10 +10,12 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
+	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
 
 type receivedMetric struct {
@@ -30,7 +33,7 @@ func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
 	store := NewStore()
-	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, nil, store)
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, WithStore(store))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -116,7 +119,7 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), store)
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()), WithStore(store))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -133,6 +136,38 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	}
 }
 
+func TestReportOnceSignsRequest(t *testing.T) {
+	const key = "secret"
+
+	store := NewStore()
+	store.SetGauge("TestGauge", 12.34)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gzipReader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			t.Fatalf("failed to create gzip reader: %v", err)
+		}
+		defer gzipReader.Close()
+
+		body, err := io.ReadAll(gzipReader)
+		if err != nil {
+			t.Fatalf("failed to read metric body: %v", err)
+		}
+		if !signature.Verify(body, key, r.Header.Get(signature.Header)) {
+			t.Fatal("request signature is invalid")
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()), WithStore(store), WithKey(key))
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+	a.ReportOnce()
+}
+
 func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 	requests := 0
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -141,7 +176,7 @@ func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), NewStore())
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -154,6 +189,7 @@ func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 
 func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 	attempts := 0
+	var delays []time.Duration
 	client := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			attempts++
@@ -168,14 +204,17 @@ func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 		}),
 	}
 
-	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, client, NewStore())
+	a, err := NewAgent(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		WithHTTPClient(client),
+		WithRetrySleep(func(delay time.Duration) {
+			delays = append(delays, delay)
+		}),
+	)
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
-	}
-
-	var delays []time.Duration
-	a.retrySleep = func(delay time.Duration) {
-		delays = append(delays, delay)
 	}
 
 	value := 1.23
@@ -196,5 +235,121 @@ func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 	wantDelays := []time.Duration{time.Second, 3 * time.Second, 5 * time.Second}
 	if !reflect.DeepEqual(delays, wantDelays) {
 		t.Fatalf("unexpected delays: got %v want %v", delays, wantDelays)
+	}
+}
+
+func TestReportWorkersRespectRateLimit(t *testing.T) {
+	const rateLimit = 2
+
+	var active atomic.Int32
+	var maximum atomic.Int32
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			current := active.Add(1)
+			for {
+				previous := maximum.Load()
+				if current <= previous || maximum.CompareAndSwap(previous, current) {
+					break
+				}
+			}
+
+			time.Sleep(20 * time.Millisecond)
+			active.Add(-1)
+
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgent(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		WithHTTPClient(client),
+		WithRateLimit(rateLimit),
+	)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	jobs := make(chan []models.Metrics, 6)
+	workers := a.startReportWorkers(jobs)
+	for index := range 6 {
+		value := float64(index)
+		jobs <- []models.Metrics{{
+			ID:    "TestGauge",
+			MType: models.Gauge,
+			Value: &value,
+		}}
+	}
+	close(jobs)
+	workers.Wait()
+
+	if got := maximum.Load(); got != rateLimit {
+		t.Fatalf("unexpected maximum concurrency: got %d want %d", got, rateLimit)
+	}
+}
+
+func TestNewAgentRejectsInvalidRateLimit(t *testing.T) {
+	_, err := NewAgent(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		WithRateLimit(0),
+	)
+	if err == nil {
+		t.Fatal("expected rate limit validation error")
+	}
+}
+
+func TestReportLoopStopsWorkersOnContextCancel(t *testing.T) {
+	store := NewStore()
+	store.SetGauge("TestGauge", 12.34)
+
+	requests := make(chan struct{}, 1)
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgent(
+		"http://localhost:8080",
+		time.Hour,
+		time.Hour,
+		WithHTTPClient(client),
+		WithStore(store),
+		WithRateLimit(1),
+	)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.ReportLoop(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("expected initial report request")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("report loop did not stop")
 	}
 }
