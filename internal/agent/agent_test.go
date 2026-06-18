@@ -2,6 +2,7 @@ package agent
 
 import (
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -32,7 +33,7 @@ func (fn roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) {
 
 func TestPollOnceCollectsMetrics(t *testing.T) {
 	store := NewStore()
-	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, nil, store)
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, WithStore(store))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -118,7 +119,7 @@ func TestReportOnceSendsMetrics(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), store)
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()), WithStore(store))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -160,7 +161,7 @@ func TestReportOnceSignsRequest(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a, err := NewAgentWithKey(server.URL, time.Second, time.Second, server.Client(), store, key)
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()), WithStore(store), WithKey(key))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -175,7 +176,7 @@ func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 	}))
 	defer server.Close()
 
-	a, err := NewAgent(server.URL, time.Second, time.Second, server.Client(), NewStore())
+	a, err := NewAgent(server.URL, time.Second, time.Second, WithHTTPClient(server.Client()))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
@@ -188,6 +189,7 @@ func TestReportOnceSkipsEmptyBatch(t *testing.T) {
 
 func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 	attempts := 0
+	var delays []time.Duration
 	client := &http.Client{
 		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
 			attempts++
@@ -202,14 +204,17 @@ func TestSendMetricsRetriesTemporaryConnectionError(t *testing.T) {
 		}),
 	}
 
-	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, client, NewStore())
+	a, err := NewAgent(
+		"http://localhost:8080",
+		time.Second,
+		time.Second,
+		WithHTTPClient(client),
+		WithRetrySleep(func(delay time.Duration) {
+			delays = append(delays, delay)
+		}),
+	)
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
-	}
-
-	var delays []time.Duration
-	a.retrySleep = func(delay time.Duration) {
-		delays = append(delays, delay)
 	}
 
 	value := 1.23
@@ -259,14 +264,12 @@ func TestReportWorkersRespectRateLimit(t *testing.T) {
 		}),
 	}
 
-	a, err := NewAgentWithKeyAndRateLimit(
+	a, err := NewAgent(
 		"http://localhost:8080",
 		time.Second,
 		time.Second,
-		client,
-		NewStore(),
-		"",
-		rateLimit,
+		WithHTTPClient(client),
+		WithRateLimit(rateLimit),
 	)
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
@@ -291,16 +294,62 @@ func TestReportWorkersRespectRateLimit(t *testing.T) {
 }
 
 func TestNewAgentRejectsInvalidRateLimit(t *testing.T) {
-	_, err := NewAgentWithKeyAndRateLimit(
+	_, err := NewAgent(
 		"http://localhost:8080",
 		time.Second,
 		time.Second,
-		nil,
-		nil,
-		"",
-		0,
+		WithRateLimit(0),
 	)
 	if err == nil {
 		t.Fatal("expected rate limit validation error")
+	}
+}
+
+func TestReportLoopStopsWorkersOnContextCancel(t *testing.T) {
+	store := NewStore()
+	store.SetGauge("TestGauge", 12.34)
+
+	requests := make(chan struct{}, 1)
+	client := &http.Client{
+		Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+			requests <- struct{}{}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("")),
+				Header:     make(http.Header),
+			}, nil
+		}),
+	}
+
+	a, err := NewAgent(
+		"http://localhost:8080",
+		time.Hour,
+		time.Hour,
+		WithHTTPClient(client),
+		WithStore(store),
+		WithRateLimit(1),
+	)
+	if err != nil {
+		t.Fatalf("failed to create agent: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		a.ReportLoop(ctx)
+		close(done)
+	}()
+
+	select {
+	case <-requests:
+	case <-time.After(time.Second):
+		t.Fatal("expected initial report request")
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("report loop did not stop")
 	}
 }

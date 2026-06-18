@@ -3,6 +3,7 @@ package agent
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,44 +32,82 @@ type Agent struct {
 	retrySleep     func(time.Duration)
 }
 
-func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store) (*Agent, error) {
-	return NewAgentWithKey(serverURL, pollInterval, reportInterval, client, store, "")
+type Option func(*Agent)
+
+func WithHTTPClient(client *http.Client) Option {
+	return func(a *Agent) {
+		if client != nil {
+			a.client = client
+		}
+	}
 }
 
-func NewAgentWithKey(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store, key string) (*Agent, error) {
-	return NewAgentWithKeyAndRateLimit(serverURL, pollInterval, reportInterval, client, store, key, 1)
+func WithStore(store *Store) Option {
+	return func(a *Agent) {
+		if store != nil {
+			a.store = store
+		}
+	}
 }
 
-func NewAgentWithKeyAndRateLimit(serverURL string, pollInterval, reportInterval time.Duration, client *http.Client, store *Store, key string, rateLimit int) (*Agent, error) {
-	if serverURL == "" {
-		return nil, fmt.Errorf("server URL is required")
+func WithKey(key string) Option {
+	return func(a *Agent) {
+		a.key = key
 	}
-	if pollInterval <= 0 {
-		return nil, fmt.Errorf("poll interval must be positive")
-	}
-	if reportInterval <= 0 {
-		return nil, fmt.Errorf("report interval must be positive")
-	}
-	if rateLimit <= 0 {
-		return nil, fmt.Errorf("rate limit must be positive")
-	}
-	if client == nil {
-		client = &http.Client{Timeout: 5 * time.Second}
-	}
-	if store == nil {
-		store = NewStore()
-	}
+}
 
-	return &Agent{
+func WithRateLimit(rateLimit int) Option {
+	return func(a *Agent) {
+		a.rateLimit = rateLimit
+	}
+}
+
+func WithRetrySleep(sleep func(time.Duration)) Option {
+	return func(a *Agent) {
+		if sleep != nil {
+			a.retrySleep = sleep
+		}
+	}
+}
+
+func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, options ...Option) (*Agent, error) {
+	agent := &Agent{
 		pollInterval:   pollInterval,
 		reportInterval: reportInterval,
 		serverURL:      serverURL,
-		client:         client,
-		store:          store,
-		key:            key,
-		rateLimit:      rateLimit,
+		client:         &http.Client{Timeout: 5 * time.Second},
+		store:          NewStore(),
+		rateLimit:      1,
 		retrySleep:     time.Sleep,
-	}, nil
+	}
+
+	for _, option := range options {
+		if option != nil {
+			option(agent)
+		}
+	}
+
+	if err := agent.validate(); err != nil {
+		return nil, err
+	}
+
+	return agent, nil
+}
+
+func (a *Agent) validate() error {
+	if a.serverURL == "" {
+		return fmt.Errorf("server URL is required")
+	}
+	if a.pollInterval <= 0 {
+		return fmt.Errorf("poll interval must be positive")
+	}
+	if a.reportInterval <= 0 {
+		return fmt.Errorf("report interval must be positive")
+	}
+	if a.rateLimit <= 0 {
+		return fmt.Errorf("rate limit must be positive")
+	}
+	return nil
 }
 
 func (a *Agent) PollOnce() {
@@ -111,35 +150,53 @@ func (a *Agent) ReportOnce() {
 	_ = a.sendMetrics(a.store.SnapshotMetrics())
 }
 
-func (a *Agent) PollLoop() {
+func (a *Agent) PollLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 
 	a.PollOnce()
-	for range ticker.C {
-		a.PollOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.PollOnce()
+		}
 	}
 }
 
-func (a *Agent) ReportLoop() {
+func (a *Agent) ReportLoop(ctx context.Context) {
 	jobs := make(chan []models.Metrics, a.rateLimit)
-	a.startReportWorkers(jobs)
+	workers := a.startReportWorkers(jobs)
+	defer func() {
+		close(jobs)
+		workers.Wait()
+	}()
 
 	ticker := time.NewTicker(a.reportInterval)
 	defer ticker.Stop()
 
-	a.enqueueReport(jobs)
-	for range ticker.C {
-		a.enqueueReport(jobs)
+	a.enqueueReport(ctx, jobs)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			a.enqueueReport(ctx, jobs)
+		}
 	}
 }
 
-func (a *Agent) enqueueReport(jobs chan<- []models.Metrics) {
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- []models.Metrics) {
 	metrics := a.store.SnapshotMetrics()
 	if len(metrics) == 0 {
 		return
 	}
-	jobs <- metrics
+
+	select {
+	case jobs <- metrics:
+	case <-ctx.Done():
+	}
 }
 
 func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup {

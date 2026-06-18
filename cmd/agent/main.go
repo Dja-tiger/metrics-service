@@ -1,7 +1,10 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/Dja-tiger/metrics-service/internal/agent"
@@ -15,20 +18,22 @@ func main() {
 	}
 
 	store := agent.NewStore()
-	metricsAgent, err := agent.NewAgentWithKeyAndRateLimit(
+	metricsAgent, err := agent.NewAgent(
 		cfg.Address,
 		time.Duration(cfg.PollInterval)*time.Second,
 		time.Duration(cfg.ReportInterval)*time.Second,
-		nil,
-		store,
-		cfg.Key,
-		cfg.RateLimit,
+		agent.WithStore(store),
+		agent.WithKey(cfg.Key),
+		agent.WithRateLimit(cfg.RateLimit),
 	)
 	if err != nil {
 		log.Fatal(err)
 	}
 
-	go metricsAgent.PollLoop()
-	go metricsAgent.SystemPollLoop()
-	metricsAgent.ReportLoop()
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	go metricsAgent.PollLoop(ctx)
+	go metricsAgent.SystemPollLoop(ctx)
+	metricsAgent.ReportLoop(ctx)
 }

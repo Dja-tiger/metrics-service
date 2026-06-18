@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -31,12 +32,17 @@ func (a *Agent) PollSystemOnce() error {
 	return errors.Join(memoryErr, cpuErr)
 }
 
-func (a *Agent) SystemPollLoop() {
+func (a *Agent) SystemPollLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 
 	_ = a.PollSystemOnce()
-	for range ticker.C {
-		_ = a.PollSystemOnce()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			_ = a.PollSystemOnce()
+		}
 	}
 }

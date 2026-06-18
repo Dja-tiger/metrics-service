@@ -26,7 +26,7 @@ func TestPollSystemOnceCollectsMetrics(t *testing.T) {
 	}
 
 	store := NewStore()
-	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, nil, store)
+	a, err := NewAgent("http://localhost:8080", time.Second, time.Second, WithStore(store))
 	if err != nil {
 		t.Fatalf("failed to create agent: %v", err)
 	}
