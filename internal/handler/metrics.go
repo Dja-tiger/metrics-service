@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dja-tiger/metrics-service/internal/audit"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 )
 
@@ -29,10 +30,15 @@ type DatabasePinger interface {
 	PingContext(ctx context.Context) error
 }
 
+type AuditPublisher interface {
+	Notify(ctx context.Context, event audit.Event) error
+}
+
 // MetricsHandler handles HTTP requests for metrics.
 type MetricsHandler struct {
 	service MetricsService
 	db      DatabasePinger
+	auditor AuditPublisher
 }
 
 func NewMetricsHandler(service MetricsService) *MetricsHandler {
@@ -43,6 +49,14 @@ func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *Metrics
 	return &MetricsHandler{
 		service: service,
 		db:      db,
+	}
+}
+
+func NewMetricsHandlerWithDBAndAudit(service MetricsService, db DatabasePinger, auditor AuditPublisher) *MetricsHandler {
+	return &MetricsHandler{
+		service: service,
+		db:      db,
+		auditor: auditor,
 	}
 }
 
@@ -65,6 +79,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.service.UpdateGauge(metricName, value)
+		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
 	case models.Counter:
@@ -75,6 +90,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.service.UpdateCounter(metricName, value)
+		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -95,6 +111,7 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 	}
 
 	h.service.UpdateMetrics([]models.Metrics{metric})
+	h.audit(r, []string{metric.ID})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
@@ -118,6 +135,7 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 
 	if len(metrics) > 0 {
 		h.service.UpdateMetrics(metrics)
+		h.audit(r, metricNames(metrics))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -270,4 +288,21 @@ func validateUpdateMetric(metric models.Metrics) int {
 	}
 
 	return http.StatusOK
+}
+
+func (h *MetricsHandler) audit(r *http.Request, metricNames []string) {
+	if h.auditor == nil || len(metricNames) == 0 {
+		return
+	}
+	if err := h.auditor.Notify(r.Context(), audit.NewEvent(metricNames, r.RemoteAddr)); err != nil {
+		log.Printf("publish audit event: %v", err)
+	}
+}
+
+func metricNames(metrics []models.Metrics) []string {
+	names := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		names = append(names, metric.ID)
+	}
+	return names
 }
