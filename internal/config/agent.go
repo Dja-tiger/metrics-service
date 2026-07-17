@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// AgentConfig contains command-line and environment settings for the agent.
 type AgentConfig struct {
 	Address        string
 	ReportInterval int
@@ -16,6 +17,7 @@ type AgentConfig struct {
 	Key            string
 }
 
+// LoadAgentConfig parses agent flags and environment variables.
 func LoadAgentConfig() (AgentConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	reportIntervalFlag := flag.Int("r", 10, "report interval in seconds")

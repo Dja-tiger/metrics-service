@@ -8,10 +8,12 @@ var defaultDelays = []time.Duration{
 	5 * time.Second,
 }
 
+// Do runs an operation and retries it with default delays while shouldRetry returns true.
 func Do(operation func() error, shouldRetry func(error) bool) error {
 	return DoWithSleeper(operation, shouldRetry, time.Sleep)
 }
 
+// DoWithSleeper runs an operation with retry delays delegated to sleep.
 func DoWithSleeper(operation func() error, shouldRetry func(error) bool, sleep func(time.Duration)) error {
 	err := operation()
 	if err == nil || !shouldRetry(err) {

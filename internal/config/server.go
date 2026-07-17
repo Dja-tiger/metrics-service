@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// ServerConfig contains command-line and environment settings for the server.
 type ServerConfig struct {
 	Address            string
 	StoreInterval      int
@@ -16,8 +17,11 @@ type ServerConfig struct {
 	Restore            bool
 	DatabaseDSN        string
 	Key                string
+	AuditFile          string
+	AuditURL           string
 }
 
+// LoadServerConfig parses server flags and environment variables.
 func LoadServerConfig() (ServerConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
@@ -25,6 +29,8 @@ func LoadServerConfig() (ServerConfig, error) {
 	restoreFlag := flag.Bool("r", true, "restore metrics from file storage")
 	databaseDSNFlag := flag.String("d", "", "PostgreSQL connection string")
 	keyFlag := flag.String("k", "", "SHA256 signing key")
+	auditFileFlag := flag.String("audit-file", "", "audit log file path")
+	auditURLFlag := flag.String("audit-url", "", "audit log receiver URL")
 	flag.Parse()
 
 	fileStorageFlagSet := false
@@ -42,6 +48,8 @@ func LoadServerConfig() (ServerConfig, error) {
 		Restore:            *restoreFlag,
 		DatabaseDSN:        *databaseDSNFlag,
 		Key:                *keyFlag,
+		AuditFile:          *auditFileFlag,
+		AuditURL:           *auditURLFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -70,6 +78,12 @@ func LoadServerConfig() (ServerConfig, error) {
 	}
 	if envKey, ok := os.LookupEnv("KEY"); ok {
 		cfg.Key = envKey
+	}
+	if envAuditFile, ok := os.LookupEnv("AUDIT_FILE"); ok {
+		cfg.AuditFile = envAuditFile
+	}
+	if envAuditURL, ok := os.LookupEnv("AUDIT_URL"); ok {
+		cfg.AuditURL = envAuditURL
 	}
 
 	if cfg.StoreInterval < 0 {

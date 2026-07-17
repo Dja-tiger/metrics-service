@@ -8,6 +8,7 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
 
+// HashSHA256 verifies request signatures and signs response bodies when a key is configured.
 func HashSHA256(key string) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if key == "" {

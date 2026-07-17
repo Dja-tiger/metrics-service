@@ -8,6 +8,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
 
+	"github.com/Dja-tiger/metrics-service/internal/audit"
 	"github.com/Dja-tiger/metrics-service/internal/config"
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
@@ -55,7 +56,20 @@ func main() {
 		metricsService = service.NewMetricsService(repository.NewMemStorage())
 	}
 
-	metricsHandler := handler.NewMetricsHandlerWithDB(metricsService, db)
+	auditNotifier := audit.NewNotifier()
+	if cfg.AuditFile != "" {
+		auditNotifier.Subscribe(audit.NewFileObserver(cfg.AuditFile))
+	}
+	if cfg.AuditURL != "" {
+		auditNotifier.Subscribe(audit.NewHTTPObserver(cfg.AuditURL, nil))
+	}
+
+	var auditor handler.AuditPublisher
+	if auditNotifier.Enabled() {
+		auditor = auditNotifier
+	}
+
+	metricsHandler := handler.NewMetricsHandlerWithDBAndAudit(metricsService, db, auditor)
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))

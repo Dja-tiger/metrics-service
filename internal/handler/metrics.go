@@ -11,34 +11,53 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dja-tiger/metrics-service/internal/audit"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 )
 
 // MetricsService describes metric operations required by handlers.
 type MetricsService interface {
+	// UpdateGauge stores the latest gauge value.
 	UpdateGauge(name string, value float64)
+	// UpdateCounter increments a counter value.
 	UpdateCounter(name string, value int64)
+	// UpdateMetrics applies several metric updates at once.
 	UpdateMetrics(metrics []models.Metrics)
+	// GetGauge returns a gauge value by name.
 	GetGauge(name string) (float64, bool)
+	// GetCounter returns a counter value by name.
 	GetCounter(name string) (int64, bool)
+	// GetAllGauges returns all known gauge metrics.
 	GetAllGauges() map[string]float64
+	// GetAllCounters returns all known counter metrics.
 	GetAllCounters() map[string]int64
 }
 
+// DatabasePinger describes database health-check behavior required by Ping.
 type DatabasePinger interface {
+	// PingContext checks database availability using the provided context.
 	PingContext(ctx context.Context) error
+}
+
+// AuditPublisher publishes audit events created after successful metric updates.
+type AuditPublisher interface {
+	// Notify publishes an audit event.
+	Notify(ctx context.Context, event audit.Event) error
 }
 
 // MetricsHandler handles HTTP requests for metrics.
 type MetricsHandler struct {
 	service MetricsService
 	db      DatabasePinger
+	auditor AuditPublisher
 }
 
+// NewMetricsHandler creates a metrics handler without database or audit support.
 func NewMetricsHandler(service MetricsService) *MetricsHandler {
 	return &MetricsHandler{service: service}
 }
 
+// NewMetricsHandlerWithDB creates a metrics handler with database ping support.
 func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *MetricsHandler {
 	return &MetricsHandler{
 		service: service,
@@ -46,6 +65,16 @@ func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *Metrics
 	}
 }
 
+// NewMetricsHandlerWithDBAndAudit creates a metrics handler with database and audit support.
+func NewMetricsHandlerWithDBAndAudit(service MetricsService, db DatabasePinger, auditor AuditPublisher) *MetricsHandler {
+	return &MetricsHandler{
+		service: service,
+		db:      db,
+		auditor: auditor,
+	}
+}
+
+// UpdateMetric handles legacy URL-based metric updates.
 func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -65,6 +94,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.service.UpdateGauge(metricName, value)
+		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
 	case models.Counter:
@@ -75,6 +105,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 		}
 
 		h.service.UpdateCounter(metricName, value)
+		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
 	default:
@@ -82,6 +113,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// UpdateMetricJSON handles a single JSON metric update.
 func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 	var metric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
@@ -95,6 +127,7 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 	}
 
 	h.service.UpdateMetrics([]models.Metrics{metric})
+	h.audit(r, []string{metric.ID})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
@@ -102,6 +135,7 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// UpdateMetricsJSON handles a batch JSON metric update.
 func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 	var metrics []models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
@@ -118,6 +152,7 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 
 	if len(metrics) > 0 {
 		h.service.UpdateMetrics(metrics)
+		h.audit(r, metricNames(metrics))
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -126,6 +161,7 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// GetValue handles legacy URL-based metric value lookups.
 func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -159,6 +195,7 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetValueJSON handles JSON metric value lookups.
 func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
 	var requestMetric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&requestMetric); err != nil {
@@ -202,6 +239,7 @@ func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListMetrics renders an HTML page with all known metrics.
 func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -219,6 +257,7 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Ping checks database availability for health checks.
 func (h *MetricsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		w.WriteHeader(http.StatusInternalServerError)
@@ -270,4 +309,21 @@ func validateUpdateMetric(metric models.Metrics) int {
 	}
 
 	return http.StatusOK
+}
+
+func (h *MetricsHandler) audit(r *http.Request, metricNames []string) {
+	if h.auditor == nil || len(metricNames) == 0 {
+		return
+	}
+	if err := h.auditor.Notify(r.Context(), audit.NewEvent(metricNames, r.RemoteAddr)); err != nil {
+		log.Printf("publish audit event: %v", err)
+	}
+}
+
+func metricNames(metrics []models.Metrics) []string {
+	names := make([]string, 0, len(metrics))
+	for _, metric := range metrics {
+		names = append(names, metric.ID)
+	}
+	return names
 }

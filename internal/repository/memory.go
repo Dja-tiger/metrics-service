@@ -18,6 +18,7 @@ type MemStorage struct {
 	counters map[string]int64
 }
 
+// NewMemStorage creates an empty in-memory metric storage.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -25,6 +26,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// NewMemStorageWithRestore creates in-memory storage and optionally restores metrics from a file.
 func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 	storage := NewMemStorage()
 	if !restore {
@@ -36,18 +38,21 @@ func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 	return storage, nil
 }
 
+// UpdateGauge stores the latest gauge value.
 func (s *MemStorage) UpdateGauge(name string, value float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gauges[name] = value
 }
 
+// UpdateCounter increments a counter value.
 func (s *MemStorage) UpdateCounter(name string, value int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counters[name] += value
 }
 
+// UpdateMetrics applies a batch of gauge and counter updates.
 func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -66,6 +71,7 @@ func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) {
 	}
 }
 
+// GetGauge returns a gauge value by name.
 func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -73,6 +79,7 @@ func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	return value, ok
 }
 
+// GetCounter returns a counter value by name.
 func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -80,6 +87,7 @@ func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	return value, ok
 }
 
+// GetAllGauges returns a copy of all gauge metrics.
 func (s *MemStorage) GetAllGauges() map[string]float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -90,6 +98,7 @@ func (s *MemStorage) GetAllGauges() map[string]float64 {
 	return copyMap
 }
 
+// GetAllCounters returns a copy of all counter metrics.
 func (s *MemStorage) GetAllCounters() map[string]int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -100,17 +109,11 @@ func (s *MemStorage) GetAllCounters() map[string]int64 {
 	return copyMap
 }
 
+// SaveToFile atomically writes all metrics to a JSON file.
 func (s *MemStorage) SaveToFile(path string) error {
-	metrics := s.snapshotMetrics()
-
-	data, err := json.MarshalIndent(metrics, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal metrics: %w", err)
-	}
-
 	dir := filepath.Dir(path)
 	if dir != "." {
-		if err = os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create storage directory: %w", err)
 		}
 	}
@@ -122,11 +125,12 @@ func (s *MemStorage) SaveToFile(path string) error {
 	tempName := tempFile.Name()
 	defer os.Remove(tempName)
 
-	if _, err = tempFile.Write(data); err != nil {
+	metrics := s.snapshotMetrics()
+	if err = json.NewEncoder(tempFile).Encode(metrics); err != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
-			return fmt.Errorf("failed to write and close temp file: %w", errors.Join(err, closeErr))
+			return fmt.Errorf("failed to encode and close temp file: %w", errors.Join(err, closeErr))
 		}
-		return fmt.Errorf("failed to write temp file: %w", err)
+		return fmt.Errorf("failed to encode metrics: %w", err)
 	}
 	if err = tempFile.Chmod(0o644); err != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
@@ -184,21 +188,28 @@ func (s *MemStorage) snapshotMetrics() []models.Metrics {
 	defer s.mu.RUnlock()
 
 	metrics := make([]models.Metrics, 0, len(s.gauges)+len(s.counters))
+	gaugeValues := make([]float64, len(s.gauges))
+	gaugeIndex := 0
 	for name, value := range s.gauges {
-		valueCopy := value
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &valueCopy,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
+
+	counterValues := make([]int64, len(s.counters))
+	counterIndex := 0
 	for name, value := range s.counters {
-		valueCopy := value
+		counterValues[counterIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &valueCopy,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 	}
 
 	return metrics

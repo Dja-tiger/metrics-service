@@ -7,11 +7,13 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
 
+	"github.com/Dja-tiger/metrics-service/internal/audit"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 	"github.com/Dja-tiger/metrics-service/internal/service"
@@ -23,6 +25,15 @@ type fakeDB struct {
 
 func (db fakeDB) PingContext(ctx context.Context) error {
 	return db.err
+}
+
+type fakeAuditor struct {
+	events []audit.Event
+}
+
+func (a *fakeAuditor) Notify(ctx context.Context, event audit.Event) error {
+	a.events = append(a.events, event)
+	return nil
 }
 
 func TestUpdateMetric(t *testing.T) {
@@ -103,6 +114,86 @@ func TestUpdateMetric(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestUpdateMetricsPublishesAudit(t *testing.T) {
+	gaugeValue := 42.5
+	counterDelta := int64(5)
+	storage := repository.NewMemStorage()
+	svc := service.NewMetricsService(storage)
+	auditor := &fakeAuditor{}
+	h := NewMetricsHandlerWithDBAndAudit(svc, nil, auditor)
+
+	router := chi.NewRouter()
+	router.Post("/updates/", h.UpdateMetricsJSON)
+
+	payload, err := json.Marshal([]models.Metrics{
+		{
+			ID:    "Alloc",
+			MType: models.Gauge,
+			Value: &gaugeValue,
+		},
+		{
+			ID:    "PollCount",
+			MType: models.Counter,
+			Delta: &counterDelta,
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/updates/", bytes.NewReader(payload))
+	req.RemoteAddr = "192.168.0.42:12345"
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status code mismatch: got %d want %d", rec.Code, http.StatusOK)
+	}
+	if len(auditor.events) != 1 {
+		t.Fatalf("unexpected audit event count: got %d want 1", len(auditor.events))
+	}
+	event := auditor.events[0]
+	if event.IPAddress != "192.168.0.42" {
+		t.Fatalf("unexpected audit ip: %s", event.IPAddress)
+	}
+	if !reflect.DeepEqual(event.Metrics, []string{"Alloc", "PollCount"}) {
+		t.Fatalf("unexpected audit metrics: %#v", event.Metrics)
+	}
+	if event.Timestamp == 0 {
+		t.Fatal("expected audit timestamp to be set")
+	}
+}
+
+func TestInvalidUpdateDoesNotPublishAudit(t *testing.T) {
+	storage := repository.NewMemStorage()
+	svc := service.NewMetricsService(storage)
+	auditor := &fakeAuditor{}
+	h := NewMetricsHandlerWithDBAndAudit(svc, nil, auditor)
+
+	router := chi.NewRouter()
+	router.Post("/update", h.UpdateMetricJSON)
+
+	payload, err := json.Marshal(models.Metrics{
+		ID:    "Alloc",
+		MType: "bad",
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/update", bytes.NewReader(payload))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status code mismatch: got %d want %d", rec.Code, http.StatusBadRequest)
+	}
+	if len(auditor.events) != 0 {
+		t.Fatalf("unexpected audit events: %#v", auditor.events)
 	}
 }
 
