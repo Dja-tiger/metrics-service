@@ -101,16 +101,9 @@ func (s *MemStorage) GetAllCounters() map[string]int64 {
 }
 
 func (s *MemStorage) SaveToFile(path string) error {
-	metrics := s.snapshotMetrics()
-
-	data, err := json.MarshalIndent(metrics, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal metrics: %w", err)
-	}
-
 	dir := filepath.Dir(path)
 	if dir != "." {
-		if err = os.MkdirAll(dir, 0o755); err != nil {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
 			return fmt.Errorf("failed to create storage directory: %w", err)
 		}
 	}
@@ -122,11 +115,12 @@ func (s *MemStorage) SaveToFile(path string) error {
 	tempName := tempFile.Name()
 	defer os.Remove(tempName)
 
-	if _, err = tempFile.Write(data); err != nil {
+	metrics := s.snapshotMetrics()
+	if err = json.NewEncoder(tempFile).Encode(metrics); err != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
-			return fmt.Errorf("failed to write and close temp file: %w", errors.Join(err, closeErr))
+			return fmt.Errorf("failed to encode and close temp file: %w", errors.Join(err, closeErr))
 		}
-		return fmt.Errorf("failed to write temp file: %w", err)
+		return fmt.Errorf("failed to encode metrics: %w", err)
 	}
 	if err = tempFile.Chmod(0o644); err != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
@@ -184,21 +178,28 @@ func (s *MemStorage) snapshotMetrics() []models.Metrics {
 	defer s.mu.RUnlock()
 
 	metrics := make([]models.Metrics, 0, len(s.gauges)+len(s.counters))
+	gaugeValues := make([]float64, len(s.gauges))
+	gaugeIndex := 0
 	for name, value := range s.gauges {
-		valueCopy := value
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &valueCopy,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
+
+	counterValues := make([]int64, len(s.counters))
+	counterIndex := 0
 	for name, value := range s.counters {
-		valueCopy := value
+		counterValues[counterIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &valueCopy,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 	}
 
 	return metrics

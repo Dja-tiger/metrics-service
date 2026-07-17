@@ -60,21 +60,28 @@ func (s *Store) SnapshotMetrics() []models.Metrics {
 	defer s.mu.Unlock()
 
 	metrics := make([]models.Metrics, 0, len(s.gauges)+len(s.counters))
+	gaugeValues := make([]float64, len(s.gauges))
+	gaugeIndex := 0
 	for name, value := range s.gauges {
-		valueCopy := value
+		gaugeValues[gaugeIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Gauge,
-			Value: &valueCopy,
+			Value: &gaugeValues[gaugeIndex],
 		})
+		gaugeIndex++
 	}
+
+	counterValues := make([]int64, len(s.counters))
+	counterIndex := 0
 	for name, value := range s.counters {
-		valueCopy := value
+		counterValues[counterIndex] = value
 		metrics = append(metrics, models.Metrics{
 			ID:    name,
 			MType: models.Counter,
-			Delta: &valueCopy,
+			Delta: &counterValues[counterIndex],
 		})
+		counterIndex++
 		delete(s.counters, name)
 	}
 	return metrics
