@@ -14,30 +14,36 @@ import (
 	"time"
 )
 
+// Event describes a successful metrics update for audit sinks.
 type Event struct {
 	Timestamp int64    `json:"ts"`
 	Metrics   []string `json:"metrics"`
 	IPAddress string   `json:"ip_address"`
 }
 
+// Observer receives audit events.
 type Observer interface {
 	Notify(ctx context.Context, event Event) error
 }
 
+// Notifier publishes audit events to all subscribed observers.
 type Notifier struct {
 	observers []Observer
 }
 
+// NewNotifier creates an audit notifier with optional initial observers.
 func NewNotifier(observers ...Observer) *Notifier {
 	return &Notifier{observers: observers}
 }
 
+// Subscribe adds an observer to the notifier.
 func (n *Notifier) Subscribe(observer Observer) {
 	if observer != nil {
 		n.observers = append(n.observers, observer)
 	}
 }
 
+// Notify sends an audit event to all observers and joins their errors.
 func (n *Notifier) Notify(ctx context.Context, event Event) error {
 	var result error
 	for _, observer := range n.observers {
@@ -48,19 +54,23 @@ func (n *Notifier) Notify(ctx context.Context, event Event) error {
 	return result
 }
 
+// Enabled reports whether the notifier has at least one observer.
 func (n *Notifier) Enabled() bool {
 	return n != nil && len(n.observers) > 0
 }
 
+// FileObserver appends audit events to a local file.
 type FileObserver struct {
 	path string
 	mu   sync.Mutex
 }
 
+// NewFileObserver creates a file audit observer.
 func NewFileObserver(path string) *FileObserver {
 	return &FileObserver{path: path}
 }
 
+// Notify writes an audit event as a JSON line.
 func (o *FileObserver) Notify(ctx context.Context, event Event) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -93,11 +103,13 @@ func (o *FileObserver) Notify(ctx context.Context, event Event) error {
 	return nil
 }
 
+// HTTPObserver sends audit events to a remote HTTP endpoint.
 type HTTPObserver struct {
 	url    string
 	client *http.Client
 }
 
+// NewHTTPObserver creates an HTTP audit observer.
 func NewHTTPObserver(url string, client *http.Client) *HTTPObserver {
 	if client == nil {
 		client = &http.Client{Timeout: 5 * time.Second}
@@ -108,6 +120,7 @@ func NewHTTPObserver(url string, client *http.Client) *HTTPObserver {
 	}
 }
 
+// Notify posts an audit event as JSON to the configured URL.
 func (o *HTTPObserver) Notify(ctx context.Context, event Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -132,6 +145,7 @@ func (o *HTTPObserver) Notify(ctx context.Context, event Event) error {
 	return nil
 }
 
+// NewEvent creates an audit event for updated metric names and a request address.
 func NewEvent(metricNames []string, remoteAddr string) Event {
 	return Event{
 		Timestamp: time.Now().Unix(),

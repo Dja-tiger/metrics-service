@@ -1,10 +1,14 @@
 package models
 
 const (
+	// Counter is the metric type for cumulative integer values.
 	Counter = "counter"
-	Gauge   = "gauge"
+	// Gauge is the metric type for latest float values.
+	Gauge = "gauge"
 )
 
+// Metrics is the JSON representation used by the metrics API.
+//
 // NOTE: Не усложняем пример, вводя иерархическую вложенность структур.
 // Органичиваясь плоской моделью.
 // Delta и Value объявлены через указатели,

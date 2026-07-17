@@ -17,20 +17,31 @@ import (
 
 // MetricsService describes metric operations required by handlers.
 type MetricsService interface {
+	// UpdateGauge stores the latest gauge value.
 	UpdateGauge(name string, value float64)
+	// UpdateCounter increments a counter value.
 	UpdateCounter(name string, value int64)
+	// UpdateMetrics applies several metric updates at once.
 	UpdateMetrics(metrics []models.Metrics)
+	// GetGauge returns a gauge value by name.
 	GetGauge(name string) (float64, bool)
+	// GetCounter returns a counter value by name.
 	GetCounter(name string) (int64, bool)
+	// GetAllGauges returns all known gauge metrics.
 	GetAllGauges() map[string]float64
+	// GetAllCounters returns all known counter metrics.
 	GetAllCounters() map[string]int64
 }
 
+// DatabasePinger describes database health-check behavior required by Ping.
 type DatabasePinger interface {
+	// PingContext checks database availability using the provided context.
 	PingContext(ctx context.Context) error
 }
 
+// AuditPublisher publishes audit events created after successful metric updates.
 type AuditPublisher interface {
+	// Notify publishes an audit event.
 	Notify(ctx context.Context, event audit.Event) error
 }
 
@@ -41,10 +52,12 @@ type MetricsHandler struct {
 	auditor AuditPublisher
 }
 
+// NewMetricsHandler creates a metrics handler without database or audit support.
 func NewMetricsHandler(service MetricsService) *MetricsHandler {
 	return &MetricsHandler{service: service}
 }
 
+// NewMetricsHandlerWithDB creates a metrics handler with database ping support.
 func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *MetricsHandler {
 	return &MetricsHandler{
 		service: service,
@@ -52,6 +65,7 @@ func NewMetricsHandlerWithDB(service MetricsService, db DatabasePinger) *Metrics
 	}
 }
 
+// NewMetricsHandlerWithDBAndAudit creates a metrics handler with database and audit support.
 func NewMetricsHandlerWithDBAndAudit(service MetricsService, db DatabasePinger, auditor AuditPublisher) *MetricsHandler {
 	return &MetricsHandler{
 		service: service,
@@ -60,6 +74,7 @@ func NewMetricsHandlerWithDBAndAudit(service MetricsService, db DatabasePinger, 
 	}
 }
 
+// UpdateMetric handles legacy URL-based metric updates.
 func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -98,6 +113,7 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// UpdateMetricJSON handles a single JSON metric update.
 func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request) {
 	var metric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metric); err != nil {
@@ -119,6 +135,7 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// UpdateMetricsJSON handles a batch JSON metric update.
 func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Request) {
 	var metrics []models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&metrics); err != nil {
@@ -144,6 +161,7 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 	}
 }
 
+// GetValue handles legacy URL-based metric value lookups.
 func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 	metricType := chi.URLParam(r, "type")
 	metricName := chi.URLParam(r, "name")
@@ -177,6 +195,7 @@ func (h *MetricsHandler) GetValue(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// GetValueJSON handles JSON metric value lookups.
 func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
 	var requestMetric models.Metrics
 	if err := json.NewDecoder(r.Body).Decode(&requestMetric); err != nil {
@@ -220,6 +239,7 @@ func (h *MetricsHandler) GetValueJSON(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// ListMetrics renders an HTML page with all known metrics.
 func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
@@ -237,6 +257,7 @@ func (h *MetricsHandler) ListMetrics(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// Ping checks database availability for health checks.
 func (h *MetricsHandler) Ping(w http.ResponseWriter, r *http.Request) {
 	if h.db == nil {
 		w.WriteHeader(http.StatusInternalServerError)

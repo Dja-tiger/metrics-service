@@ -17,6 +17,7 @@ import (
 //go:embed migrations/*.sql
 var migrationsFS embed.FS
 
+// NewPostgresDB opens a PostgreSQL database handle for a DSN.
 func NewPostgresDB(dsn string) (*sql.DB, error) {
 	if dsn == "" {
 		return nil, nil
@@ -25,6 +26,7 @@ func NewPostgresDB(dsn string) (*sql.DB, error) {
 	return sql.Open("postgres", dsn)
 }
 
+// MigratePostgres applies embedded PostgreSQL migrations.
 func MigratePostgres(db *sql.DB) error {
 	if db == nil {
 		return nil
@@ -42,6 +44,7 @@ func MigratePostgres(db *sql.DB) error {
 	return nil
 }
 
+// PostgresStorage stores metrics in PostgreSQL.
 type PostgresStorage struct {
 	db *sql.DB
 }
@@ -64,10 +67,12 @@ const upsertCounterQuery = `
 	    counter_value = COALESCE(metrics.counter_value, 0) + EXCLUDED.counter_value
 `
 
+// NewPostgresStorage creates PostgreSQL-backed metric storage.
 func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 	return &PostgresStorage{db: db}
 }
 
+// UpdateGauge stores the latest gauge value in PostgreSQL.
 func (s *PostgresStorage) UpdateGauge(name string, value float64) {
 	_ = retryPostgres(func() error {
 		_, err := s.db.Exec(upsertGaugeQuery, name, models.Gauge, value)
@@ -75,6 +80,7 @@ func (s *PostgresStorage) UpdateGauge(name string, value float64) {
 	})
 }
 
+// UpdateCounter increments a counter value in PostgreSQL.
 func (s *PostgresStorage) UpdateCounter(name string, value int64) {
 	_ = retryPostgres(func() error {
 		_, err := s.db.Exec(upsertCounterQuery, name, models.Counter, value)
@@ -82,6 +88,7 @@ func (s *PostgresStorage) UpdateCounter(name string, value int64) {
 	})
 }
 
+// UpdateMetrics applies a metric batch in a PostgreSQL transaction.
 func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) {
 	_ = retryPostgres(func() error {
 		return s.updateMetrics(metrics)
@@ -125,6 +132,7 @@ func (s *PostgresStorage) updateMetrics(metrics []models.Metrics) error {
 	return err
 }
 
+// GetGauge returns a gauge value by name from PostgreSQL.
 func (s *PostgresStorage) GetGauge(name string) (float64, bool) {
 	var value float64
 	err := retryPostgres(func() error {
@@ -140,6 +148,7 @@ func (s *PostgresStorage) GetGauge(name string) (float64, bool) {
 	return value, true
 }
 
+// GetCounter returns a counter value by name from PostgreSQL.
 func (s *PostgresStorage) GetCounter(name string) (int64, bool) {
 	var value int64
 	err := retryPostgres(func() error {
@@ -155,6 +164,7 @@ func (s *PostgresStorage) GetCounter(name string) (int64, bool) {
 	return value, true
 }
 
+// GetAllGauges returns all gauge metrics from PostgreSQL.
 func (s *PostgresStorage) GetAllGauges() map[string]float64 {
 	var gauges map[string]float64
 	err := retryPostgres(func() error {
@@ -194,6 +204,7 @@ func (s *PostgresStorage) getAllGauges() (map[string]float64, error) {
 	return gauges, nil
 }
 
+// GetAllCounters returns all counter metrics from PostgreSQL.
 func (s *PostgresStorage) GetAllCounters() map[string]int64 {
 	var counters map[string]int64
 	err := retryPostgres(func() error {

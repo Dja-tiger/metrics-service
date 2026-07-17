@@ -8,6 +8,7 @@ import (
 	"strings"
 )
 
+// ServerConfig contains command-line and environment settings for the server.
 type ServerConfig struct {
 	Address            string
 	StoreInterval      int
@@ -20,6 +21,7 @@ type ServerConfig struct {
 	AuditURL           string
 }
 
+// LoadServerConfig parses server flags and environment variables.
 func LoadServerConfig() (ServerConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")

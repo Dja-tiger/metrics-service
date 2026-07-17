@@ -2,7 +2,9 @@ package service
 
 import "time"
 
+// PersistentStorage saves metrics to durable storage.
 type PersistentStorage interface {
+	// SaveToFile writes metrics to the provided path.
 	SaveToFile(path string) error
 }
 

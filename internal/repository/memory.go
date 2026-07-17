@@ -18,6 +18,7 @@ type MemStorage struct {
 	counters map[string]int64
 }
 
+// NewMemStorage creates an empty in-memory metric storage.
 func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
@@ -25,6 +26,7 @@ func NewMemStorage() *MemStorage {
 	}
 }
 
+// NewMemStorageWithRestore creates in-memory storage and optionally restores metrics from a file.
 func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 	storage := NewMemStorage()
 	if !restore {
@@ -36,18 +38,21 @@ func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 	return storage, nil
 }
 
+// UpdateGauge stores the latest gauge value.
 func (s *MemStorage) UpdateGauge(name string, value float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gauges[name] = value
 }
 
+// UpdateCounter increments a counter value.
 func (s *MemStorage) UpdateCounter(name string, value int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counters[name] += value
 }
 
+// UpdateMetrics applies a batch of gauge and counter updates.
 func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -66,6 +71,7 @@ func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) {
 	}
 }
 
+// GetGauge returns a gauge value by name.
 func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -73,6 +79,7 @@ func (s *MemStorage) GetGauge(name string) (float64, bool) {
 	return value, ok
 }
 
+// GetCounter returns a counter value by name.
 func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -80,6 +87,7 @@ func (s *MemStorage) GetCounter(name string) (int64, bool) {
 	return value, ok
 }
 
+// GetAllGauges returns a copy of all gauge metrics.
 func (s *MemStorage) GetAllGauges() map[string]float64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -90,6 +98,7 @@ func (s *MemStorage) GetAllGauges() map[string]float64 {
 	return copyMap
 }
 
+// GetAllCounters returns a copy of all counter metrics.
 func (s *MemStorage) GetAllCounters() map[string]int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -100,6 +109,7 @@ func (s *MemStorage) GetAllCounters() map[string]int64 {
 	return copyMap
 }
 
+// SaveToFile atomically writes all metrics to a JSON file.
 func (s *MemStorage) SaveToFile(path string) error {
 	dir := filepath.Dir(path)
 	if dir != "." {

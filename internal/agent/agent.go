@@ -20,7 +20,7 @@ import (
 
 var errRetriableSend = errors.New("retriable send error")
 
-// Agent collects runtime metrics and reports them via HTTP.
+// Agent collects runtime and system metrics and reports them to a metrics server.
 type Agent struct {
 	pollInterval   time.Duration
 	reportInterval time.Duration
@@ -32,8 +32,10 @@ type Agent struct {
 	retrySleep     func(time.Duration)
 }
 
+// Option configures an Agent during construction.
 type Option func(*Agent)
 
+// WithHTTPClient configures the HTTP client used for metric delivery.
 func WithHTTPClient(client *http.Client) Option {
 	return func(a *Agent) {
 		if client != nil {
@@ -42,6 +44,7 @@ func WithHTTPClient(client *http.Client) Option {
 	}
 }
 
+// WithStore configures the in-memory metric store used by the agent.
 func WithStore(store *Store) Option {
 	return func(a *Agent) {
 		if store != nil {
@@ -50,18 +53,21 @@ func WithStore(store *Store) Option {
 	}
 }
 
+// WithKey configures the SHA256 signing key for outgoing requests.
 func WithKey(key string) Option {
 	return func(a *Agent) {
 		a.key = key
 	}
 }
 
+// WithRateLimit configures the maximum number of concurrent report workers.
 func WithRateLimit(rateLimit int) Option {
 	return func(a *Agent) {
 		a.rateLimit = rateLimit
 	}
 }
 
+// WithRetrySleep configures the sleep function used between retriable send attempts.
 func WithRetrySleep(sleep func(time.Duration)) Option {
 	return func(a *Agent) {
 		if sleep != nil {
@@ -70,6 +76,7 @@ func WithRetrySleep(sleep func(time.Duration)) Option {
 	}
 }
 
+// NewAgent creates a metrics agent with validated polling and reporting settings.
 func NewAgent(serverURL string, pollInterval, reportInterval time.Duration, options ...Option) (*Agent, error) {
 	agent := &Agent{
 		pollInterval:   pollInterval,
@@ -110,6 +117,7 @@ func (a *Agent) validate() error {
 	return nil
 }
 
+// PollOnce collects runtime metrics and stores them in the agent store.
 func (a *Agent) PollOnce() {
 	var memStats runtime.MemStats
 	runtime.ReadMemStats(&memStats)
@@ -146,10 +154,12 @@ func (a *Agent) PollOnce() {
 	a.store.IncCounter("PollCount", 1)
 }
 
+// ReportOnce sends a single snapshot of currently collected metrics.
 func (a *Agent) ReportOnce() {
 	_ = a.sendMetrics(a.store.SnapshotMetrics())
 }
 
+// PollLoop collects runtime metrics periodically until the context is canceled.
 func (a *Agent) PollLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
@@ -165,6 +175,7 @@ func (a *Agent) PollLoop(ctx context.Context) {
 	}
 }
 
+// ReportLoop sends metric snapshots periodically using a bounded worker pool.
 func (a *Agent) ReportLoop(ctx context.Context) {
 	jobs := make(chan []models.Metrics, a.rateLimit)
 	workers := a.startReportWorkers(jobs)

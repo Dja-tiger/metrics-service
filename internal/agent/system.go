@@ -15,6 +15,7 @@ var (
 	readCPUPercent    = cpu.Percent
 )
 
+// PollSystemOnce collects gopsutil memory and CPU metrics once.
 func (a *Agent) PollSystemOnce() error {
 	memoryStats, memoryErr := readVirtualMemory()
 	if memoryErr == nil {
@@ -32,6 +33,7 @@ func (a *Agent) PollSystemOnce() error {
 	return errors.Join(memoryErr, cpuErr)
 }
 
+// SystemPollLoop collects gopsutil metrics periodically until the context is canceled.
 func (a *Agent) SystemPollLoop(ctx context.Context) {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
