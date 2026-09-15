@@ -23,6 +23,16 @@ git fetch template && git checkout template/v2 .github
 
 Затем добавьте полученные изменения в свой репозиторий.
 
+## Информация о сборке
+
+Агент и сервер при запуске выводят в stdout версию, дату и коммит сборки.
+Если значение не задано, выводится `N/A`. Значения передаются через `-ldflags`:
+
+```bash
+go build -ldflags "-X main.buildVersion=v1.0.0 -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.buildCommit=$(git rev-parse HEAD)" -o ./cmd/server/server ./cmd/server
+go build -ldflags "-X main.buildVersion=v1.0.0 -X main.buildDate=$(date -u +%Y-%m-%dT%H:%M:%SZ) -X main.buildCommit=$(git rev-parse HEAD)" -o ./cmd/agent/agent ./cmd/agent
+```
+
 ## Пул объектов
 
 Пакет `internal/pool` содержит `Pool[T interface{ Reset() }]` на основе `sync.Pool`.

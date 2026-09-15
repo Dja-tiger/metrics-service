@@ -9,6 +9,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/Dja-tiger/metrics-service/internal/audit"
+	"github.com/Dja-tiger/metrics-service/internal/buildinfo"
 	"github.com/Dja-tiger/metrics-service/internal/config"
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
@@ -16,7 +17,13 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/service"
 )
 
+var buildVersion string
+var buildDate string
+var buildCommit string
+
 func main() {
+	buildinfo.Print(buildVersion, buildDate, buildCommit)
+
 	logger, err := zap.NewProduction()
 	if err != nil {
 		log.Fatal(err)

@@ -8,10 +8,17 @@ import (
 	"time"
 
 	"github.com/Dja-tiger/metrics-service/internal/agent"
+	"github.com/Dja-tiger/metrics-service/internal/buildinfo"
 	"github.com/Dja-tiger/metrics-service/internal/config"
 )
 
+var buildVersion string
+var buildDate string
+var buildCommit string
+
 func main() {
+	buildinfo.Print(buildVersion, buildDate, buildCommit)
+
 	cfg, err := config.LoadAgentConfig()
 	if err != nil {
 		log.Fatal(err)
