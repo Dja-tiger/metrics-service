@@ -11,6 +11,16 @@ import (
 type MetricsService struct {
 	repo         repository.MetricsRepository
 	saveOnUpdate func()
+	persistence  *persistence
+}
+
+// Close stops background persistence and saves the final snapshot once.
+// Call it after all handlers and other metric writers have finished.
+func (s *MetricsService) Close() error {
+	if s.persistence == nil {
+		return nil
+	}
+	return s.persistence.close()
 }
 
 // NewMetricsService creates a metric service backed by a repository.

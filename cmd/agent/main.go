@@ -44,10 +44,10 @@ func main() {
 		log.Fatal(err)
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
 
-	go metricsAgent.PollLoop(ctx)
-	go metricsAgent.SystemPollLoop(ctx)
-	metricsAgent.ReportLoop(ctx)
+	if err := metricsAgent.Run(ctx); err != nil {
+		log.Fatal(err)
+	}
 }

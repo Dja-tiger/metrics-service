@@ -60,6 +60,16 @@ func (s *Store) SnapshotAndResetCounters() map[string]int64 {
 	return copyMap
 }
 
+func (s *Store) restoreCounters(metrics []models.Metrics) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, metric := range metrics {
+		if metric.MType == models.Counter && metric.Delta != nil {
+			s.counters[metric.ID] += *metric.Delta
+		}
+	}
+}
+
 // SnapshotMetrics returns metrics ready for reporting and removes reported counters.
 func (s *Store) SnapshotMetrics() []models.Metrics {
 	s.mu.Lock()

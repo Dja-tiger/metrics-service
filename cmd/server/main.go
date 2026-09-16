@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
 	"log"
 	"net/http"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -15,6 +18,7 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
+	"github.com/Dja-tiger/metrics-service/internal/server"
 	"github.com/Dja-tiger/metrics-service/internal/service"
 )
 
@@ -100,7 +104,14 @@ func main() {
 	router.Get("/ping", metricsHandler.Ping)
 	router.Get("/", metricsHandler.ListMetrics)
 
-	if err = http.ListenAndServe(cfg.Address, router); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
+	defer stop()
+	srv := &http.Server{Addr: cfg.Address, Handler: router}
+	if err = server.Run(ctx, srv, metricsService.Close); err != nil {
+		if db != nil {
+			_ = db.Close()
+		}
+		_ = logger.Sync()
 		log.Fatal(err)
 	}
 }

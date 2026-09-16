@@ -163,8 +163,24 @@ func (a *Agent) PollOnce() {
 }
 
 // ReportOnce sends a single snapshot of currently collected metrics.
-func (a *Agent) ReportOnce() {
-	_ = a.sendMetrics(a.store.SnapshotMetrics())
+func (a *Agent) ReportOnce() error {
+	metrics := a.store.SnapshotMetrics()
+	if err := a.sendMetrics(metrics); err != nil {
+		a.store.restoreCounters(metrics)
+		return err
+	}
+	return nil
+}
+
+// Run collects and reports metrics until cancellation, then drains all work and
+// sends a final snapshot. The server must remain available until Run returns.
+func (a *Agent) Run(ctx context.Context) error {
+	var collectors sync.WaitGroup
+	collectors.Go(func() { a.PollLoop(ctx) })
+	collectors.Go(func() { a.SystemPollLoop(ctx) })
+	reportErr := a.ReportLoop(ctx)
+	collectors.Wait()
+	return errors.Join(reportErr, a.ReportOnce())
 }
 
 // PollLoop collects runtime metrics periodically until the context is canceled.
@@ -184,12 +200,13 @@ func (a *Agent) PollLoop(ctx context.Context) {
 }
 
 // ReportLoop sends metric snapshots periodically using a bounded worker pool.
-func (a *Agent) ReportLoop(ctx context.Context) {
+func (a *Agent) ReportLoop(ctx context.Context) (err error) {
 	jobs := make(chan []models.Metrics, a.rateLimit)
 	workers := a.startReportWorkers(jobs)
 	defer func() {
 		close(jobs)
 		workers.Wait()
+		err = workers.err
 	}()
 
 	ticker := time.NewTicker(a.reportInterval)
@@ -215,18 +232,32 @@ func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- []models.Metrics)
 	select {
 	case jobs <- metrics:
 	case <-ctx.Done():
+		a.store.restoreCounters(metrics)
 	}
 }
 
-func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup {
-	var workers sync.WaitGroup
+type reportWorkers struct {
+	sync.WaitGroup
+	mu  sync.Mutex
+	err error
+}
+
+func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *reportWorkers {
+	var workers reportWorkers
 	workers.Add(a.rateLimit)
 
 	for range a.rateLimit {
 		go func() {
 			defer workers.Done()
 			for metrics := range jobs {
-				_ = a.sendMetrics(metrics)
+				if err := a.sendMetrics(metrics); err != nil {
+					a.store.restoreCounters(metrics)
+					workers.mu.Lock()
+					if workers.err == nil {
+						workers.err = err
+					}
+					workers.mu.Unlock()
+				}
 			}
 		}()
 	}
