@@ -318,7 +318,7 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 		req.Header.Set(signature.Header, hash)
 	}
 
-	resp, err := a.client.Do(req)
+	resp, err := a.client.Do(withRealIP(req))
 	if err != nil {
 		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
