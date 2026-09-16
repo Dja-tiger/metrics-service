@@ -12,9 +12,11 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/config"
 )
 
-var buildVersion string
-var buildDate string
-var buildCommit string
+var (
+	buildVersion = "N/A"
+	buildDate    = "N/A"
+	buildCommit  = "N/A"
+)
 
 func main() {
 	buildinfo.Print(buildVersion, buildDate, buildCommit)
