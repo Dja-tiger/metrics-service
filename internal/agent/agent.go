@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/encryption"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/retry"
 	"github.com/Dja-tiger/metrics-service/internal/signature"
@@ -28,6 +30,7 @@ type Agent struct {
 	client         *http.Client
 	store          *Store
 	key            string
+	publicKey      *rsa.PublicKey
 	rateLimit      int
 	retrySleep     func(time.Duration)
 }
@@ -58,6 +61,11 @@ func WithKey(key string) Option {
 	return func(a *Agent) {
 		a.key = key
 	}
+}
+
+// WithPublicKey enables request encryption. The key must not be modified after construction.
+func WithPublicKey(key *rsa.PublicKey) Option {
+	return func(a *Agent) { a.publicKey = key }
 }
 
 // WithRateLimit configures the maximum number of concurrent report workers.
@@ -250,8 +258,16 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 		hash = signature.Calculate(body, a.key)
 	}
 
+	payload := compressedBody.Bytes()
+	if a.publicKey != nil {
+		payload, err = encryption.Encrypt(a.publicKey, payload)
+		if err != nil {
+			return fmt.Errorf("encrypt metrics: %w", err)
+		}
+	}
+
 	return retry.DoWithSleeper(func() error {
-		return a.sendCompressedMetrics(compressedBody.Bytes(), hash)
+		return a.sendCompressedMetrics(payload, hash)
 	}, isRetriableSendError, a.retrySleep)
 }
 
@@ -264,6 +280,9 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if a.publicKey != nil {
+		req.Header.Set(encryption.Header, encryption.Algorithm)
+	}
 	if hash != "" {
 		req.Header.Set(signature.Header, hash)
 	}

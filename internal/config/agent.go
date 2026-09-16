@@ -15,6 +15,7 @@ type AgentConfig struct {
 	PollInterval   int
 	RateLimit      int
 	Key            string
+	CryptoKey      string
 }
 
 // LoadAgentConfig parses agent flags and environment variables.
@@ -24,6 +25,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 	pollIntervalFlag := flag.Int("p", 2, "poll interval in seconds")
 	rateLimitFlag := flag.Int("l", 1, "maximum number of concurrent requests")
 	keyFlag := flag.String("k", "", "SHA256 signing key")
+	cryptoKeyFlag := flag.String("crypto-key", "", "RSA public key PEM file")
 	flag.Parse()
 
 	cfg := AgentConfig{
@@ -32,6 +34,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 		PollInterval:   *pollIntervalFlag,
 		RateLimit:      *rateLimitFlag,
 		Key:            *keyFlag,
+		CryptoKey:      *cryptoKeyFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -53,6 +56,9 @@ func LoadAgentConfig() (AgentConfig, error) {
 	}
 	if envKey, ok := os.LookupEnv("KEY"); ok {
 		cfg.Key = envKey
+	}
+	if value, ok := os.LookupEnv("CRYPTO_KEY"); ok {
+		cfg.CryptoKey = value
 	}
 	if envRateLimit, ok := os.LookupEnv("RATE_LIMIT"); ok {
 		parsed, err := strconv.Atoi(envRateLimit)

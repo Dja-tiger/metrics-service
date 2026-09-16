@@ -11,6 +11,7 @@ import (
 	"github.com/Dja-tiger/metrics-service/internal/audit"
 	"github.com/Dja-tiger/metrics-service/internal/buildinfo"
 	"github.com/Dja-tiger/metrics-service/internal/config"
+	"github.com/Dja-tiger/metrics-service/internal/encryption"
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
@@ -33,6 +34,11 @@ func main() {
 	}()
 
 	cfg, err := config.LoadServerConfig()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	privateKey, err := encryption.LoadPrivateKey(cfg.CryptoKey)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -80,6 +86,7 @@ func main() {
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
+	router.Use(appmiddleware.Decrypt(privateKey))
 	router.Use(appmiddleware.Gzip)
 	router.Use(appmiddleware.HashSHA256(cfg.Key))
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)
