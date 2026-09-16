@@ -10,11 +10,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
 	"github.com/Dja-tiger/metrics-service/internal/audit"
 	"github.com/Dja-tiger/metrics-service/internal/buildinfo"
 	"github.com/Dja-tiger/metrics-service/internal/config"
 	"github.com/Dja-tiger/metrics-service/internal/encryption"
+	"github.com/Dja-tiger/metrics-service/internal/grpcapi"
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
@@ -114,8 +116,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
+	var grpcServer *grpc.Server
+	if cfg.GRPCAddress != "" {
+		grpcServer, err = grpcapi.NewServer(metricsService, cfg.TrustedSubnet, auditor, logger)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	srv := &http.Server{Addr: cfg.Address, Handler: router}
-	if err = server.Run(ctx, srv, metricsService.Close); err != nil {
+	if err = server.RunWithGRPC(ctx, srv, grpcServer, cfg.GRPCAddress, metricsService.Close); err != nil {
 		if db != nil {
 			_ = db.Close()
 		}

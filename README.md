@@ -342,3 +342,45 @@ Dropped 68 nodes (cum <= 3.32MB)
          0     0% 49.07%  -321.91MB 48.55%  testing.(*B).launch
          0     0% 49.07%  -321.88MB 48.54%  testing.(*B).runN
 ```
+
+## gRPC (инкремент 28)
+
+HTTP API сохранён. Дополнительный gRPC listener сервера и gRPC-транспорт агента
+включаются непустым параметром `-grpc-address`, переменной `GRPC_ADDRESS`
+или полем `"grpc_address"` JSON-конфигурации.
+Приоритет: окружение > явно переданный флаг > JSON > пустое значение (только HTTP).
+
+В двух терминалах:
+
+```sh
+go run ./cmd/server -a=localhost:8080 -grpc-address=localhost:9090 -t=127.0.0.0/8
+go run ./cmd/agent -grpc-address=127.0.0.1:9090 -r=10 -p=2 -l=2
+```
+
+Агент отправляет protobuf-батчи через `metrics.Metrics/UpdateMetrics` с gzip.
+Метаданные `x-real-ip` содержат локальный IP фактического соединения.
+Unary interceptor проверяет его по `trusted_subnet`; отсутствующий, некорректный
+или недоверенный IP даёт `PermissionDenied`. При пустой подсети ограничений нет.
+Это проверка заявленного IP, не аутентификация клиента.
+
+Оба API используют общий сервис/хранилище и аудит. Неверный батч отклоняется
+до изменения хранилища. Пустые батчи агент не отправляет. Worker pool ограничивает
+параллелизм; `Unavailable` повторяется до трёх раз с задержками 1, 3, 5 секунд.
+При остановке агент завершает отправку, сервер дожидается HTTP и gRPC запросов
+и затем сохраняет итоговое состояние.
+
+В этой реализации gRPC работает без TLS. HTTP-подпись `KEY` и RSA-шифрование
+`CRYPTO_KEY` относятся только к HTTP, а не к protobuf-транспорту.
+Используйте gRPC в доверенной сети; для защищённого соединения потребуется TLS.
+
+Протокол: `internal/proto/metrics.proto`. Сгенерированные Go-файлы включены
+в репозиторий; для обычной сборки protoc не нужен. Перегенерация (требуется protoc):
+
+```sh
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
+PATH="$(go env GOPATH)/bin:$PATH" protoc -I . \
+  --go_out=. --go_opt=paths=source_relative \
+  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
+  internal/proto/metrics.proto
+```

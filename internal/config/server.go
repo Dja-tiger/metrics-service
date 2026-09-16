@@ -11,6 +11,7 @@ import (
 // ServerConfig contains the effective server settings.
 type ServerConfig struct {
 	Address            string
+	GRPCAddress        string
 	StoreInterval      int
 	FileStoragePath    string
 	FileStorageEnabled bool
@@ -25,6 +26,7 @@ type ServerConfig struct {
 
 // LoadServerConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadServerConfig() (ServerConfig, error) {
+	grpcFlag := flag.String("grpc-address", "", "optional gRPC server address")
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
@@ -38,6 +40,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	configPath := configFileFlags()
 	flag.Parse()
 	if err := applyFile(*configPath, []fileOption{
+		{field: "grpc_address", flag: "grpc-address", env: []string{"GRPC_ADDRESS"}},
 		{field: "address", flag: "a", env: []string{"ADDRESS"}},
 		{field: "store_interval", flag: "i", env: []string{"STORE_INTERVAL"}, duration: true},
 		{field: "store_file", flag: "f", env: []string{"FILE_STORAGE_PATH", "STORE_FILE"}},
@@ -60,6 +63,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	})
 
 	cfg := ServerConfig{
+		GRPCAddress:        *grpcFlag,
 		Address:            *addrFlag,
 		StoreInterval:      *storeIntervalFlag,
 		FileStoragePath:    *fileStoragePathFlag,
@@ -73,6 +77,9 @@ func LoadServerConfig() (ServerConfig, error) {
 		TrustedSubnet:      *trustedSubnetFlag,
 	}
 
+	if value, ok := os.LookupEnv("GRPC_ADDRESS"); ok {
+		cfg.GRPCAddress = value
+	}
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
 		cfg.Address = envAddress
 	}
