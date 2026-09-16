@@ -8,7 +8,7 @@ import (
 	"strings"
 )
 
-// ServerConfig contains command-line and environment settings for the server.
+// ServerConfig contains the effective server settings.
 type ServerConfig struct {
 	Address            string
 	StoreInterval      int
@@ -22,7 +22,7 @@ type ServerConfig struct {
 	AuditURL           string
 }
 
-// LoadServerConfig parses server flags and environment variables.
+// LoadServerConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadServerConfig() (ServerConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
@@ -33,7 +33,21 @@ func LoadServerConfig() (ServerConfig, error) {
 	cryptoKeyFlag := flag.String("crypto-key", "", "RSA private key PEM file")
 	auditFileFlag := flag.String("audit-file", "", "audit log file path")
 	auditURLFlag := flag.String("audit-url", "", "audit log receiver URL")
+	configPath := configFileFlags()
 	flag.Parse()
+	if err := applyFile(*configPath, []fileOption{
+		{field: "address", flag: "a", env: []string{"ADDRESS"}},
+		{field: "store_interval", flag: "i", env: []string{"STORE_INTERVAL"}, duration: true},
+		{field: "store_file", flag: "f", env: []string{"FILE_STORAGE_PATH", "STORE_FILE"}},
+		{field: "restore", flag: "r", env: []string{"RESTORE"}},
+		{field: "database_dsn", flag: "d", env: []string{"DATABASE_DSN"}},
+		{field: "key", flag: "k", env: []string{"KEY"}},
+		{field: "crypto_key", flag: "crypto-key", env: []string{"CRYPTO_KEY"}},
+		{field: "audit_file", flag: "audit-file", env: []string{"AUDIT_FILE"}},
+		{field: "audit_url", flag: "audit-url", env: []string{"AUDIT_URL"}},
+	}); err != nil {
+		return ServerConfig{}, err
+	}
 
 	fileStorageFlagSet := false
 	flag.Visit(func(f *flag.Flag) {
@@ -64,6 +78,10 @@ func LoadServerConfig() (ServerConfig, error) {
 			return ServerConfig{}, err
 		}
 		cfg.StoreInterval = parsed
+	}
+	if value, ok := os.LookupEnv("STORE_FILE"); ok {
+		cfg.FileStoragePath = value
+		cfg.FileStorageEnabled = value != ""
 	}
 	if envFileStoragePath, ok := os.LookupEnv("FILE_STORAGE_PATH"); ok {
 		cfg.FileStoragePath = envFileStoragePath
