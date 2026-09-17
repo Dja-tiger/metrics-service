@@ -104,3 +104,44 @@ func ExampleNew() {
 	p.Put(clean)
 	// Output: metric name: ""
 }
+
+// A value type verifies that a factory-free generic pool returns T's zero,
+// not only nil for pointer types.
+type resetValue struct{ Count int }
+
+func (resetValue) Reset() {}
+
+func TestNilFactory(t *testing.T) {
+	if got := pool.New[*buffer](nil).Get(); got != nil {
+		t.Errorf("empty pointer pool: got %v, want nil", got)
+	}
+	if got := pool.New[resetValue](nil).Get(); got != (resetValue{}) {
+		t.Errorf("empty value pool: got %+v, want zero", got)
+	}
+	if got := pool.New[interface{ Reset() }](nil).Get(); got != nil {
+		t.Errorf("empty interface pool: got %v, want nil", got)
+	}
+}
+
+func TestZeroValuePool(t *testing.T) {
+	var p pool.Pool[*buffer]
+	if got := p.Get(); got != nil {
+		t.Errorf("zero-value pool: got %v, want nil", got)
+	}
+}
+
+func TestFactoryReturningNilInterface(t *testing.T) {
+	p := pool.New(func() interface{ Reset() } { return nil })
+	if got := p.Get(); got != nil {
+		t.Errorf("nil factory result: got %v, want nil", got)
+	}
+}
+
+func TestNilFactoryPut(t *testing.T) {
+	p := pool.New[*buffer](nil)
+	p.Put(&buffer{data: []byte{1, 2}})
+	// The runtime can discard pooled objects, so nil is also a valid result.
+	if got := p.Get(); got != nil && (len(got.data) != 0 || got.resets != 1) {
+		t.Errorf("object was not reset: %+v", got)
+	}
+}
