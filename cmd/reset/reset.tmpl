@@ -1,0 +1,32 @@
+{{.Header}}
+package {{.Package}}
+{{range .Imports}}
+import {{.Alias}} {{printf "%q" .Path}}
+{{end}}
+{{range .Methods}}
+// Reset clears {{.Name}} while retaining slice, map and pointer allocations.
+func (rs *{{.Receiver}}) Reset() {
+ if rs == nil {
+  return
+ }
+ {{template "operations" .Operations -}}
+}
+{{end}}
+
+{{define "operations"}}{{range .}}{{if eq .Kind "basic"}}{{.Expr}} = {{.Value}}
+{{else if eq .Kind "pointer"}}if {{.Expr}} != nil {
+ {{template "operations" .Children -}}
+}
+{{else if eq .Kind "slice"}}{{.Expr}} = {{.Expr}}[:0]
+{{else if eq .Kind "map"}}clear({{.Expr}})
+{{else if eq .Kind "struct"}}if resetter, ok := any(&{{.Expr}}).(interface{ Reset() }); ok {
+ resetter.Reset()
+} else {
+ {{template "zero" .}}
+}
+{{else if eq .Kind "array"}}for {{.Index}} := range {{.Expr}} {
+ {{template "operations" .Children -}}
+}
+{{else}}{{template "zero" .}}
+{{end}}{{end}}{{end}}
+{{define "zero"}}{ var zero {{.Type}}; {{.Expr}} = zero }{{end}}
