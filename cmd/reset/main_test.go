@@ -80,8 +80,22 @@ func TestGenerateRejectsConflicts(t *testing.T) {
 				writeTestFile(t, root, "reset.gen.go", tc.existing)
 			}
 			if err := generate(root); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %q, got %v", tc.want, err)
+				t.Errorf("expected %q, got %v", tc.want, err)
+				return
 			}
 		})
+	}
+}
+
+func TestGeneratePreparesBeforeWriting(t *testing.T) {
+	root := t.TempDir()
+	writeTestFile(t, root, "go.mod", "module fixture\n\ngo 1.26.1\n")
+	writeTestFile(t, root, "a/model.go", "package a\n// generate:reset\ntype Item struct { Value int }\n")
+	writeTestFile(t, root, "z/model.go", "package z\n// generate:reset\ntype Item int\n")
+	if err := generate(root); err == nil {
+		t.Fatal("expected invalid marked type to fail")
+	}
+	if _, err := os.Stat(filepath.Join(root, "a/reset.gen.go")); !os.IsNotExist(err) {
+		t.Fatalf("generation failure left partial output: %v", err)
 	}
 }
