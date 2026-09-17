@@ -134,3 +134,48 @@ func TestFailedReportRestoresCounters(t *testing.T) {
 		t.Fatalf("counter lost: %d", got)
 	}
 }
+
+func TestRunSucceedsAfterFailedBatchIsRecovered(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	var delivered int64
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		calls++
+		if calls <= 4 {
+			if calls == 4 {
+				cancel()
+			}
+			_ = r.Body.Close()
+			return nil, errors.New("temporarily offline")
+		}
+		reader, err := gzip.NewReader(r.Body)
+		if err != nil {
+			return nil, err
+		}
+		defer reader.Close()
+		defer r.Body.Close()
+		var batch []models.Metrics
+		if err := json.NewDecoder(reader).Decode(&batch); err != nil {
+			return nil, err
+		}
+		for _, m := range batch {
+			if m.ID == "TestCounter" {
+				delivered += *m.Delta
+			}
+		}
+		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("ok")), Header: make(http.Header)}, nil
+	})}
+	store := NewStore()
+	store.IncCounter("TestCounter", 7)
+	a, err := NewAgent("http://server", time.Hour, time.Hour, WithHTTPClient(client), WithStore(store), WithRetrySleep(func(time.Duration) {}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := a.Run(ctx); err != nil {
+		t.Fatalf("recovered delivery reported as failure: %v", err)
+	}
+	if calls != 5 || delivered != 7 {
+		t.Fatalf("calls=%d delivered=%d", calls, delivered)
+	}
+}
