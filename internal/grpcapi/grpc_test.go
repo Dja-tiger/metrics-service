@@ -136,3 +136,39 @@ func TestBatchValidation(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestStorageFailureReturnsInternal(t *testing.T) {
+	db, err := repository.NewPostgresDB("host=localhost dbname=unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+	server, err := NewServer(service.NewMetricsService(repository.NewPostgresStorage(db)), "", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go server.Serve(listener)
+	t.Cleanup(server.Stop)
+	client, err := NewClient(listener.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+	delta := int64(5)
+	err = client.Send([]models.Metrics{{ID: "PollCount", MType: models.Counter, Delta: &delta}})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("failed storage acknowledged: %v", err)
+	}
+}
+
+func TestServerRequiresService(t *testing.T) {
+	if _, err := NewServer(nil, "", nil, nil); err == nil {
+		t.Error("nil service accepted")
+	}
+}

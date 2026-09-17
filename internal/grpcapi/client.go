@@ -62,7 +62,10 @@ func (c *Client) Send(metrics []models.Metrics) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_, err := c.rpc.UpdateMetrics(ctx, request)
-	return err
+	if err != nil {
+		return fmt.Errorf("send gRPC metrics: %w", err)
+	}
+	return nil
 }
 
 type ipAuthInfo struct {

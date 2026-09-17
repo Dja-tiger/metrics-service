@@ -96,6 +96,16 @@ func LoadAgentConfig() (AgentConfig, error) {
 		return AgentConfig{}, fmt.Errorf("rate limit must be positive")
 	}
 
+	if err := validateSeconds("PollInterval", cfg.PollInterval); err != nil {
+		return AgentConfig{}, err
+	}
+	if err := validateSeconds("ReportInterval", cfg.ReportInterval); err != nil {
+		return AgentConfig{}, err
+	}
+
+	if err := validateGRPCSecurity(cfg.GRPCAddress, cfg.Key, cfg.CryptoKey); err != nil {
+		return AgentConfig{}, err
+	}
 	cfg.Address = normalizeServerURL(cfg.Address)
 	return cfg, nil
 }

@@ -8,13 +8,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
+	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"runtime"
 	"sync"
 	"time"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/Dja-tiger/metrics-service/internal/encryption"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
@@ -187,9 +190,10 @@ func (a *Agent) Run(ctx context.Context) error {
 	var collectors sync.WaitGroup
 	collectors.Go(func() { a.PollLoop(ctx) })
 	collectors.Go(func() { a.SystemPollLoop(ctx) })
-	reportErr := a.ReportLoop(ctx)
+	a.ReportLoop(ctx)
 	collectors.Wait()
-	return errors.Join(reportErr, a.ReportOnce())
+	// Worker failures restore counters; the final report determines delivery success.
+	return a.ReportOnce()
 }
 
 // PollLoop collects runtime metrics periodically until the context is canceled.
@@ -261,6 +265,7 @@ func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *reportWorkers 
 			for metrics := range jobs {
 				if err := a.sendMetrics(metrics); err != nil {
 					a.store.restoreCounters(metrics)
+					log.Printf("report metrics: %v", err)
 					workers.mu.Lock()
 					if workers.err == nil {
 						workers.err = err
@@ -335,6 +340,8 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
 	defer resp.Body.Close()
+	// Drain the acknowledgement so the transport can reuse the connection.
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)

@@ -20,7 +20,7 @@ import (
 )
 
 // BatchService stores a validated batch through the existing service layer.
-type BatchService interface{ UpdateMetrics([]models.Metrics) }
+type BatchService interface{ UpdateMetrics([]models.Metrics) error }
 
 // Auditor receives successful batch audit events.
 type Auditor interface {
@@ -36,6 +36,9 @@ type metricsServer struct {
 
 // NewServer registers the Metrics service and subnet and logging interceptors.
 func NewServer(service BatchService, subnet string, auditor Auditor, logger *zap.Logger) (*grpc.Server, error) {
+	if service == nil {
+		return nil, fmt.Errorf("metrics service is required")
+	}
 	check, err := TrustedSubnet(subnet)
 	if err != nil {
 		return nil, err
@@ -110,7 +113,10 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	s.service.UpdateMetrics(metrics)
+	if err := s.service.UpdateMetrics(metrics); err != nil {
+		s.logger.Info("store grpc metrics failed", zap.Error(err))
+		return nil, status.Error(codes.Internal, "failed to store metrics")
+	}
 	if s.auditor != nil {
 		ip := ""
 		if values := metadata.ValueFromIncomingContext(ctx, "x-real-ip"); len(values) == 1 {

@@ -73,24 +73,24 @@ func NewPostgresStorage(db *sql.DB) *PostgresStorage {
 }
 
 // UpdateGauge stores the latest gauge value in PostgreSQL.
-func (s *PostgresStorage) UpdateGauge(name string, value float64) {
-	_ = retryPostgres(func() error {
+func (s *PostgresStorage) UpdateGauge(name string, value float64) error {
+	return retryPostgres(func() error {
 		_, err := s.db.Exec(upsertGaugeQuery, name, models.Gauge, value)
 		return err
 	})
 }
 
 // UpdateCounter increments a counter value in PostgreSQL.
-func (s *PostgresStorage) UpdateCounter(name string, value int64) {
-	_ = retryPostgres(func() error {
+func (s *PostgresStorage) UpdateCounter(name string, value int64) error {
+	return retryPostgres(func() error {
 		_, err := s.db.Exec(upsertCounterQuery, name, models.Counter, value)
 		return err
 	})
 }
 
 // UpdateMetrics applies a metric batch in a PostgreSQL transaction.
-func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) {
-	_ = retryPostgres(func() error {
+func (s *PostgresStorage) UpdateMetrics(metrics []models.Metrics) error {
+	return retryPostgres(func() error {
 		return s.updateMetrics(metrics)
 	})
 }

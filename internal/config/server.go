@@ -128,6 +128,13 @@ func LoadServerConfig() (ServerConfig, error) {
 		return ServerConfig{}, fmt.Errorf("store interval must be non-negative")
 	}
 
+	if err := validateSeconds("StoreInterval", cfg.StoreInterval); err != nil {
+		return ServerConfig{}, err
+	}
+
+	if err := validateGRPCSecurity(cfg.GRPCAddress, cfg.Key, cfg.CryptoKey); err != nil {
+		return ServerConfig{}, err
+	}
 	cfg.Address = normalizeListenAddr(cfg.Address)
 	return cfg, nil
 }

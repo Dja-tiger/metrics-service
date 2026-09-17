@@ -18,11 +18,11 @@ import (
 // MetricsService describes metric operations required by handlers.
 type MetricsService interface {
 	// UpdateGauge stores the latest gauge value.
-	UpdateGauge(name string, value float64)
+	UpdateGauge(name string, value float64) error
 	// UpdateCounter increments a counter value.
-	UpdateCounter(name string, value int64)
+	UpdateCounter(name string, value int64) error
 	// UpdateMetrics applies several metric updates at once.
-	UpdateMetrics(metrics []models.Metrics)
+	UpdateMetrics(metrics []models.Metrics) error
 	// GetGauge returns a gauge value by name.
 	GetGauge(name string) (float64, bool)
 	// GetCounter returns a counter value by name.
@@ -93,7 +93,11 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.service.UpdateGauge(metricName, value)
+		if err := h.service.UpdateGauge(metricName, value); err != nil {
+			log.Printf("store metrics: %v", err)
+			http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+			return
+		}
 		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
@@ -104,7 +108,11 @@ func (h *MetricsHandler) UpdateMetric(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		h.service.UpdateCounter(metricName, value)
+		if err := h.service.UpdateCounter(metricName, value); err != nil {
+			log.Printf("store metrics: %v", err)
+			http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+			return
+		}
 		h.audit(r, []string{metricName})
 		w.WriteHeader(http.StatusOK)
 
@@ -126,7 +134,11 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	h.service.UpdateMetrics([]models.Metrics{metric})
+	if err := h.service.UpdateMetrics([]models.Metrics{metric}); err != nil {
+		log.Printf("store metrics: %v", err)
+		http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+		return
+	}
 	h.audit(r, []string{metric.ID})
 
 	w.Header().Set("Content-Type", "application/json")
@@ -151,7 +163,11 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(metrics) > 0 {
-		h.service.UpdateMetrics(metrics)
+		if err := h.service.UpdateMetrics(metrics); err != nil {
+			log.Printf("store metrics: %v", err)
+			http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+			return
+		}
 		h.audit(r, metricNames(metrics))
 	}
 

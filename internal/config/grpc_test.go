@@ -41,3 +41,22 @@ func TestGRPCConfig(t *testing.T) {
 		}
 	}
 }
+
+func TestGRPCRejectsIgnoredSecuritySettings(t *testing.T) {
+	for _, kind := range []string{"agent", "server"} {
+		for _, key := range []string{"KEY", "CRYPTO_KEY"} {
+			t.Run(kind+"/"+key, func(t *testing.T) {
+				prepareConfig(t, []string{"-grpc-address=localhost:9090"}, map[string]string{key: "configured"})
+				var err error
+				if kind == "agent" {
+					_, err = LoadAgentConfig()
+				} else {
+					_, err = LoadServerConfig()
+				}
+				if err == nil {
+					t.Error("gRPC silently ignored security settings")
+				}
+			})
+		}
+	}
+}
