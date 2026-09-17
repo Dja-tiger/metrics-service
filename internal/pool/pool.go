@@ -6,26 +6,32 @@ import "sync"
 // Pool stores objects of one type and resets them before reuse.
 // It is safe for concurrent use but must not be copied after first use.
 // Objects may be removed by the garbage collector at any time.
-// Create a Pool with New; its zero value is not ready for use.
+// Its zero value is an empty pool without an object factory.
 type Pool[T interface{ Reset() }] struct {
 	items sync.Pool
 }
 
 // New creates a pool whose empty Get calls use newObject to allocate an object.
-// newObject must be non-nil, safe for concurrent calls, and return a new,
-// non-nil object in its initial state. Normally T is a pointer to a struct.
+// With a nil factory, an empty Get returns the zero value of T.
+// A non-nil factory must be safe for concurrent calls and return a new object
+// in its initial state. Normally T is a pointer to a struct.
 func New[T interface{ Reset() }](newObject func() T) *Pool[T] {
-	return &Pool[T]{
-		items: sync.Pool{
-			New: func() any { return newObject() },
-		},
+	p := &Pool[T]{}
+	if newObject != nil {
+		p.items.New = func() any { return newObject() }
 	}
+	return p
 }
 
 // Get returns an available object, creating one when the pool is empty.
+// Without a factory, an empty pool returns the zero value of T.
 // The caller owns the object until it is returned with Put.
 func (p *Pool[T]) Get() T {
-	return p.items.Get().(T)
+	if object := p.items.Get(); object != nil {
+		return object.(T)
+	}
+	var zero T
+	return zero
 }
 
 // Put resets an object and makes it available for reuse.
