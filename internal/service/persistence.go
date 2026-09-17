@@ -40,10 +40,12 @@ func (p *persistence) save() error {
 	return p.storage.SaveToFile(p.path)
 }
 
-func (p *persistence) saveAndHandle() {
-	if err := p.save(); err != nil && p.handleError != nil {
+func (p *persistence) saveAndHandle() error {
+	err := p.save()
+	if err != nil && p.handleError != nil {
 		p.handleError(err)
 	}
+	return err
 }
 
 func (p *persistence) run(interval time.Duration) {
