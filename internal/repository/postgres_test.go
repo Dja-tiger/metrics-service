@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgerrcode"
 	"github.com/lib/pq"
+	"github.com/lib/pq/pqerror"
 )
 
 func TestIsPostgresConnectionException(t *testing.T) {
@@ -16,12 +17,12 @@ func TestIsPostgresConnectionException(t *testing.T) {
 	}{
 		{
 			name: "connection exception class 08",
-			err:  &pq.Error{Code: pq.ErrorCode(pgerrcode.ConnectionFailure)},
+			err:  &pq.Error{Code: pqerror.Code(pgerrcode.ConnectionFailure)},
 			want: true,
 		},
 		{
 			name: "non-retriable postgres error",
-			err:  &pq.Error{Code: pq.ErrorCode(pgerrcode.UniqueViolation)},
+			err:  &pq.Error{Code: pqerror.Code(pgerrcode.UniqueViolation)},
 			want: false,
 		},
 		{
