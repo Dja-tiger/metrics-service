@@ -7,12 +7,14 @@ import (
 	"net/netip"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	pb "github.com/Dja-tiger/metrics-service/internal/proto"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/encoding/gzip"
+	"google.golang.org/grpc/metadata"
 )
 
 // Client sends metric batches. Close it only after all agent workers finish.
@@ -38,6 +40,18 @@ func (c *Client) Send(metrics []models.Metrics) error {
 	if len(metrics) == 0 {
 		return nil
 	}
+	return c.SendBatch(delivery.New(metrics))
+}
+
+// SendBatch preserves a logical request ID across retry attempts.
+func (c *Client) SendBatch(batch delivery.Batch) error {
+	metrics := batch.Metrics
+	if len(metrics) == 0 {
+		return nil
+	}
+	if !delivery.ValidKey(batch.ID) {
+		return fmt.Errorf("invalid batch ID")
+	}
 	request := &pb.UpdateMetricsRequest{Metrics: make([]*pb.Metric, 0, len(metrics))}
 	for _, m := range metrics {
 		item := &pb.Metric{Id: m.ID}
@@ -61,6 +75,7 @@ func (c *Client) Send(metrics []models.Metrics) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	ctx = metadata.AppendToOutgoingContext(ctx, "idempotency-key", batch.ID)
 	_, err := c.rpc.UpdateMetrics(ctx, request)
 	if err != nil {
 		return fmt.Errorf("send gRPC metrics: %w", err)

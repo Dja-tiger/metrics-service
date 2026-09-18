@@ -4,6 +4,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -11,7 +12,7 @@ import (
 
 type batchSenderFunc func([]models.Metrics) error
 
-func (f batchSenderFunc) Send(m []models.Metrics) error { return f(m) }
+func (f batchSenderFunc) SendBatch(batch delivery.Batch) error { return f(batch.Metrics) }
 
 func TestGRPCSenderRetries(t *testing.T) {
 	for _, code := range []codes.Code{codes.Unavailable, codes.PermissionDenied, codes.InvalidArgument} {

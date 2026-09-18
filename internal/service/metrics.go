@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
@@ -109,4 +111,31 @@ func (s *MetricsService) save() error {
 		return s.saveOnUpdate()
 	}
 	return nil
+}
+
+// UpdateMetricsOnce deduplicates a keyed batch; empty keys preserve legacy behavior.
+func (s *MetricsService) UpdateMetricsOnce(key string, metrics []models.Metrics) (bool, error) {
+	if len(metrics) == 0 {
+		return false, nil
+	}
+	if key == "" {
+		return true, s.UpdateMetrics(metrics)
+	}
+	if !delivery.ValidKey(key) {
+		return false, fmt.Errorf("invalid idempotency key")
+	}
+	repo, ok := s.repo.(repository.IdempotentRepository)
+	if !ok {
+		return false, fmt.Errorf("storage does not support idempotent batches")
+	}
+	fingerprint, err := delivery.Fingerprint(metrics)
+	if err != nil {
+		return false, fmt.Errorf("fingerprint metrics: %w", err)
+	}
+	applied, err := repo.UpdateMetricsOnce(key, fingerprint, metrics)
+	if err != nil {
+		return false, err
+	}
+	// Repeat persistence even for a duplicate: an earlier synchronous save may have failed.
+	return applied, s.save()
 }

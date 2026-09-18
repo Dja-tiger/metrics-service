@@ -3,12 +3,14 @@ package grpcapi
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"net"
 	"time"
 
 	"github.com/Dja-tiger/metrics-service/internal/audit"
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	pb "github.com/Dja-tiger/metrics-service/internal/proto"
 	"go.uber.org/zap"
@@ -20,7 +22,9 @@ import (
 )
 
 // BatchService stores a validated batch through the existing service layer.
-type BatchService interface{ UpdateMetrics([]models.Metrics) error }
+type BatchService interface {
+	UpdateMetricsOnce(string, []models.Metrics) (bool, error)
+}
 
 // Auditor receives successful batch audit events.
 type Auditor interface {
@@ -82,6 +86,13 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 	if request == nil {
 		return nil, status.Error(codes.InvalidArgument, "request is required")
 	}
+	key := ""
+	if values := metadata.ValueFromIncomingContext(ctx, "idempotency-key"); len(values) > 0 {
+		if len(values) != 1 || !delivery.ValidKey(values[0]) {
+			return nil, status.Error(codes.InvalidArgument, "invalid idempotency key")
+		}
+		key = values[0]
+	}
 	metrics := make([]models.Metrics, 0, len(request.Metrics))
 	names := make([]string, 0, len(request.Metrics))
 	for _, item := range request.Metrics {
@@ -113,11 +124,15 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
 	}
-	if err := s.service.UpdateMetrics(metrics); err != nil {
+	applied, err := s.service.UpdateMetricsOnce(key, metrics)
+	if err != nil {
+		if errors.Is(err, delivery.ErrConflict) {
+			return nil, status.Error(codes.AlreadyExists, err.Error())
+		}
 		s.logger.Info("store grpc metrics failed", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to store metrics")
 	}
-	if s.auditor != nil {
+	if applied && s.auditor != nil {
 		ip := ""
 		if values := metadata.ValueFromIncomingContext(ctx, "x-real-ip"); len(values) == 1 {
 			ip = values[0]
