@@ -8,23 +8,36 @@ import (
 	"strings"
 )
 
-// AgentConfig contains command-line and environment settings for the agent.
+// AgentConfig contains the effective agent settings.
 type AgentConfig struct {
 	Address        string
 	ReportInterval int
 	PollInterval   int
 	RateLimit      int
 	Key            string
+	CryptoKey      string
 }
 
-// LoadAgentConfig parses agent flags and environment variables.
+// LoadAgentConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadAgentConfig() (AgentConfig, error) {
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	reportIntervalFlag := flag.Int("r", 10, "report interval in seconds")
 	pollIntervalFlag := flag.Int("p", 2, "poll interval in seconds")
 	rateLimitFlag := flag.Int("l", 1, "maximum number of concurrent requests")
 	keyFlag := flag.String("k", "", "SHA256 signing key")
+	cryptoKeyFlag := flag.String("crypto-key", "", "RSA public key PEM file")
+	configPath := configFileFlags()
 	flag.Parse()
+	if err := applyFile(*configPath, []fileOption{
+		{field: "address", flag: "a", env: []string{"ADDRESS"}},
+		{field: "report_interval", flag: "r", env: []string{"REPORT_INTERVAL"}, duration: true},
+		{field: "poll_interval", flag: "p", env: []string{"POLL_INTERVAL"}, duration: true},
+		{field: "rate_limit", flag: "l", env: []string{"RATE_LIMIT"}},
+		{field: "key", flag: "k", env: []string{"KEY"}},
+		{field: "crypto_key", flag: "crypto-key", env: []string{"CRYPTO_KEY"}},
+	}); err != nil {
+		return AgentConfig{}, err
+	}
 
 	cfg := AgentConfig{
 		Address:        *addrFlag,
@@ -32,6 +45,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 		PollInterval:   *pollIntervalFlag,
 		RateLimit:      *rateLimitFlag,
 		Key:            *keyFlag,
+		CryptoKey:      *cryptoKeyFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -54,6 +68,9 @@ func LoadAgentConfig() (AgentConfig, error) {
 	if envKey, ok := os.LookupEnv("KEY"); ok {
 		cfg.Key = envKey
 	}
+	if value, ok := os.LookupEnv("CRYPTO_KEY"); ok {
+		cfg.CryptoKey = value
+	}
 	if envRateLimit, ok := os.LookupEnv("RATE_LIMIT"); ok {
 		parsed, err := strconv.Atoi(envRateLimit)
 		if err != nil {
@@ -70,6 +87,13 @@ func LoadAgentConfig() (AgentConfig, error) {
 	}
 	if cfg.RateLimit <= 0 {
 		return AgentConfig{}, fmt.Errorf("rate limit must be positive")
+	}
+
+	if err := validateSeconds("PollInterval", cfg.PollInterval); err != nil {
+		return AgentConfig{}, err
+	}
+	if err := validateSeconds("ReportInterval", cfg.ReportInterval); err != nil {
+		return AgentConfig{}, err
 	}
 
 	cfg.Address = normalizeServerURL(cfg.Address)

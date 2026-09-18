@@ -16,6 +16,7 @@ type MemStorage struct {
 	mu       sync.RWMutex
 	gauges   map[string]float64
 	counters map[string]int64
+	receipts map[string]string
 }
 
 // NewMemStorage creates an empty in-memory metric storage.
@@ -23,6 +24,7 @@ func NewMemStorage() *MemStorage {
 	return &MemStorage{
 		gauges:   make(map[string]float64),
 		counters: make(map[string]int64),
+		receipts: make(map[string]string),
 	}
 }
 
@@ -39,24 +41,31 @@ func NewMemStorageWithRestore(path string, restore bool) (*MemStorage, error) {
 }
 
 // UpdateGauge stores the latest gauge value.
-func (s *MemStorage) UpdateGauge(name string, value float64) {
+func (s *MemStorage) UpdateGauge(name string, value float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.gauges[name] = value
+	return nil
 }
 
 // UpdateCounter increments a counter value.
-func (s *MemStorage) UpdateCounter(name string, value int64) {
+func (s *MemStorage) UpdateCounter(name string, value int64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.counters[name] += value
+	return nil
 }
 
 // UpdateMetrics applies a batch of gauge and counter updates.
-func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) {
+func (s *MemStorage) UpdateMetrics(metrics []models.Metrics) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	s.updateMetricsLocked(metrics)
+	return nil
+}
+
+func (s *MemStorage) updateMetricsLocked(metrics []models.Metrics) {
 	for _, metric := range metrics {
 		switch metric.MType {
 		case models.Gauge:
@@ -125,7 +134,7 @@ func (s *MemStorage) SaveToFile(path string) error {
 	tempName := tempFile.Name()
 	defer os.Remove(tempName)
 
-	metrics := s.snapshotMetrics()
+	metrics := s.fileSnapshot()
 	if err = json.NewEncoder(tempFile).Encode(metrics); err != nil {
 		if closeErr := tempFile.Close(); closeErr != nil {
 			return fmt.Errorf("failed to encode and close temp file: %w", errors.Join(err, closeErr))
@@ -157,7 +166,7 @@ func (s *MemStorage) loadFromFile(path string) error {
 		return fmt.Errorf("failed to read storage file: %w", err)
 	}
 
-	var metrics []models.Metrics
+	var metrics []snapshotRecord
 	if err = json.Unmarshal(data, &metrics); err != nil {
 		return fmt.Errorf("failed to unmarshal metrics: %w", err)
 	}
@@ -167,7 +176,11 @@ func (s *MemStorage) loadFromFile(path string) error {
 
 	s.gauges = make(map[string]float64)
 	s.counters = make(map[string]int64)
+	s.receipts = make(map[string]string)
 	for _, metric := range metrics {
+		for key, fingerprint := range metric.Receipts {
+			s.receipts[key] = fingerprint
+		}
 		switch metric.MType {
 		case models.Gauge:
 			if metric.Value != nil {
@@ -186,7 +199,10 @@ func (s *MemStorage) loadFromFile(path string) error {
 func (s *MemStorage) snapshotMetrics() []models.Metrics {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.snapshotMetricsLocked()
+}
 
+func (s *MemStorage) snapshotMetricsLocked() []models.Metrics {
 	metrics := make([]models.Metrics, 0, len(s.gauges)+len(s.counters))
 	gaugeValues := make([]float64, len(s.gauges))
 	gaugeIndex := 0
@@ -213,4 +229,28 @@ func (s *MemStorage) snapshotMetrics() []models.Metrics {
 	}
 
 	return metrics
+}
+
+// snapshotRecord extends the existing JSON array without changing metric fields.
+// Receipts live on the first record and are committed with the same snapshot.
+type snapshotRecord struct {
+	models.Metrics
+	Receipts map[string]string `json:"_request_receipts,omitempty"`
+}
+
+func (s *MemStorage) fileSnapshot() []snapshotRecord {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	metrics := s.snapshotMetricsLocked()
+	records := make([]snapshotRecord, len(metrics))
+	for i, m := range metrics {
+		records[i].Metrics = m
+	}
+	if len(records) > 0 && len(s.receipts) > 0 {
+		records[0].Receipts = make(map[string]string, len(s.receipts))
+		for key, hash := range s.receipts {
+			records[0].Receipts[key] = hash
+		}
+	}
+	return records
 }
