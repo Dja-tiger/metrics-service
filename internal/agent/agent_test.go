@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/signature"
 )
@@ -275,15 +276,15 @@ func TestReportWorkersRespectRateLimit(t *testing.T) {
 		t.Fatalf("failed to create agent: %v", err)
 	}
 
-	jobs := make(chan []models.Metrics, 6)
+	jobs := make(chan delivery.Batch, 6)
 	workers := a.startReportWorkers(jobs)
 	for index := range 6 {
 		value := float64(index)
-		jobs <- []models.Metrics{{
+		jobs <- delivery.New([]models.Metrics{{
 			ID:    "TestGauge",
 			MType: models.Gauge,
 			Value: &value,
-		}}
+		}})
 	}
 	close(jobs)
 	workers.Wait()
