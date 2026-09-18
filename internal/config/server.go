@@ -20,6 +20,7 @@ type ServerConfig struct {
 	CryptoKey          string
 	AuditFile          string
 	AuditURL           string
+	TrustedSubnet      string
 }
 
 // LoadServerConfig loads defaults, JSON, explicit flags and environment, in that order.
@@ -33,6 +34,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	cryptoKeyFlag := flag.String("crypto-key", "", "RSA private key PEM file")
 	auditFileFlag := flag.String("audit-file", "", "audit log file path")
 	auditURLFlag := flag.String("audit-url", "", "audit log receiver URL")
+	trustedSubnetFlag := flag.String("t", "", "trusted agent subnet in CIDR notation")
 	configPath := configFileFlags()
 	flag.Parse()
 	if err := applyFile(*configPath, []fileOption{
@@ -45,6 +47,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		{field: "crypto_key", flag: "crypto-key", env: []string{"CRYPTO_KEY"}},
 		{field: "audit_file", flag: "audit-file", env: []string{"AUDIT_FILE"}},
 		{field: "audit_url", flag: "audit-url", env: []string{"AUDIT_URL"}},
+		{field: "trusted_subnet", flag: "t", env: []string{"TRUSTED_SUBNET"}},
 	}); err != nil {
 		return ServerConfig{}, err
 	}
@@ -67,6 +70,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		CryptoKey:          *cryptoKeyFlag,
 		AuditFile:          *auditFileFlag,
 		AuditURL:           *auditURLFlag,
+		TrustedSubnet:      *trustedSubnetFlag,
 	}
 
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
@@ -108,6 +112,9 @@ func LoadServerConfig() (ServerConfig, error) {
 	}
 	if envAuditURL, ok := os.LookupEnv("AUDIT_URL"); ok {
 		cfg.AuditURL = envAuditURL
+	}
+	if value, ok := os.LookupEnv("TRUSTED_SUBNET"); ok {
+		cfg.TrustedSubnet = value
 	}
 
 	if cfg.StoreInterval < 0 {
