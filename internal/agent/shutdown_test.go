@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/shirou/gopsutil/v4/mem"
 )
@@ -115,9 +116,10 @@ func TestCanceledEnqueueRestoresCounters(t *testing.T) {
 	a.store.IncCounter("PollCount", 5)
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	a.enqueueReport(ctx, make(chan []models.Metrics))
-	if got := a.store.SnapshotAndResetCounters()["PollCount"]; got != 5 {
-		t.Fatalf("counter lost: %d", got)
+	a.enqueueReport(ctx, make(chan delivery.Batch))
+	pending := a.takePending()
+	if len(pending) != 1 || pending[0].ID == "" || *pending[0].Metrics[0].Delta != 5 {
+		t.Fatalf("original batch lost: %+v", pending)
 	}
 }
 
@@ -130,8 +132,9 @@ func TestFailedReportRestoresCounters(t *testing.T) {
 	if err := a.ReportOnce(); err == nil {
 		t.Fatal("delivery error hidden")
 	}
-	if got := a.store.SnapshotAndResetCounters()["PollCount"]; got != 5 {
-		t.Fatalf("counter lost: %d", got)
+	pending := a.takePending()
+	if len(pending) != 1 || pending[0].ID == "" || *pending[0].Metrics[0].Delta != 5 {
+		t.Fatalf("original batch lost: %+v", pending)
 	}
 }
 
@@ -175,7 +178,7 @@ func TestRunSucceedsAfterFailedBatchIsRecovered(t *testing.T) {
 	if err := a.Run(ctx); err != nil {
 		t.Fatalf("recovered delivery reported as failure: %v", err)
 	}
-	if calls != 5 || delivered != 7 {
+	if calls != 6 || delivered != 7 {
 		t.Fatalf("calls=%d delivered=%d", calls, delivered)
 	}
 }

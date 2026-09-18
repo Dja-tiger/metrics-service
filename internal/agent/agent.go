@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	"github.com/Dja-tiger/metrics-service/internal/encryption"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/retry"
@@ -26,6 +27,8 @@ var errRetriableSend = errors.New("retriable send error")
 
 // Agent collects runtime and system metrics and reports them to a metrics server.
 type Agent struct {
+	pendingMu      sync.Mutex
+	pending        []delivery.Batch
 	pollInterval   time.Duration
 	reportInterval time.Duration
 	serverURL      string
@@ -166,12 +169,41 @@ func (a *Agent) PollOnce() {
 
 // ReportOnce sends a single snapshot of currently collected metrics.
 func (a *Agent) ReportOnce() error {
+	batches := a.takePending()
+	var result error
+	for _, batch := range batches {
+		if err := a.sendBatch(batch); err != nil {
+			a.requeue(batch)
+			result = errors.Join(result, err)
+		}
+	}
+	if result != nil {
+		return result
+	}
 	metrics := a.store.SnapshotMetrics()
-	if err := a.sendMetrics(metrics); err != nil {
-		a.store.restoreCounters(metrics)
+	if len(metrics) == 0 {
+		return nil
+	}
+	batch := delivery.New(metrics)
+	if err := a.sendBatch(batch); err != nil {
+		a.requeue(batch)
 		return err
 	}
 	return nil
+}
+
+func (a *Agent) takePending() []delivery.Batch {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	batches := a.pending
+	a.pending = nil
+	return batches
+}
+
+func (a *Agent) requeue(batch delivery.Batch) {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	a.pending = append(a.pending, batch)
 }
 
 // Run collects and reports metrics until cancellation, then drains all work and
@@ -182,7 +214,7 @@ func (a *Agent) Run(ctx context.Context) error {
 	collectors.Go(func() { a.SystemPollLoop(ctx) })
 	a.ReportLoop(ctx)
 	collectors.Wait()
-	// Worker failures restore counters; the final report determines delivery success.
+	// Retry the original failed batches before sending the final collected snapshot.
 	return a.ReportOnce()
 }
 
@@ -204,7 +236,7 @@ func (a *Agent) PollLoop(ctx context.Context) {
 
 // ReportLoop sends metric snapshots periodically using a bounded worker pool.
 func (a *Agent) ReportLoop(ctx context.Context) (err error) {
-	jobs := make(chan []models.Metrics, a.rateLimit)
+	jobs := make(chan delivery.Batch, a.rateLimit)
 	workers := a.startReportWorkers(jobs)
 	defer func() {
 		close(jobs)
@@ -226,16 +258,24 @@ func (a *Agent) ReportLoop(ctx context.Context) (err error) {
 	}
 }
 
-func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- []models.Metrics) {
-	metrics := a.store.SnapshotMetrics()
-	if len(metrics) == 0 {
-		return
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- delivery.Batch) {
+	batches := a.takePending()
+	if len(batches) == 0 {
+		metrics := a.store.SnapshotMetrics()
+		if len(metrics) == 0 {
+			return
+		}
+		batches = []delivery.Batch{delivery.New(metrics)}
 	}
-
-	select {
-	case jobs <- metrics:
-	case <-ctx.Done():
-		a.store.restoreCounters(metrics)
+	for i, batch := range batches {
+		select {
+		case jobs <- batch:
+		case <-ctx.Done():
+			for _, pending := range batches[i:] {
+				a.requeue(pending)
+			}
+			return
+		}
 	}
 }
 
@@ -245,16 +285,16 @@ type reportWorkers struct {
 	err error
 }
 
-func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *reportWorkers {
+func (a *Agent) startReportWorkers(jobs <-chan delivery.Batch) *reportWorkers {
 	var workers reportWorkers
 	workers.Add(a.rateLimit)
 
 	for range a.rateLimit {
 		go func() {
 			defer workers.Done()
-			for metrics := range jobs {
-				if err := a.sendMetrics(metrics); err != nil {
-					a.store.restoreCounters(metrics)
+			for batch := range jobs {
+				if err := a.sendBatch(batch); err != nil {
+					a.requeue(batch)
 					log.Printf("report metrics: %v", err)
 					workers.mu.Lock()
 					if workers.err == nil {
@@ -270,6 +310,14 @@ func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *reportWorkers 
 }
 
 func (a *Agent) sendMetrics(metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	return a.sendBatch(delivery.New(metrics))
+}
+
+func (a *Agent) sendBatch(batch delivery.Batch) error {
+	metrics := batch.Metrics
 	if len(metrics) == 0 {
 		return nil
 	}
@@ -302,16 +350,17 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 	}
 
 	return retry.DoWithSleeper(func() error {
-		return a.sendCompressedMetrics(payload, hash)
+		return a.sendCompressedMetrics(payload, hash, batch.ID)
 	}, isRetriableSendError, a.retrySleep)
 }
 
-func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
+func (a *Agent) sendCompressedMetrics(body []byte, hash string, batchID string) error {
 	url := fmt.Sprintf("%s/updates/", a.serverURL)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	req.Header.Set(delivery.Header, batchID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")

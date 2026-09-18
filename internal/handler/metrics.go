@@ -3,6 +3,8 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	"html/template"
 	"log"
 	"net/http"
@@ -23,6 +25,8 @@ type MetricsService interface {
 	UpdateCounter(name string, value int64) error
 	// UpdateMetrics applies several metric updates at once.
 	UpdateMetrics(metrics []models.Metrics) error
+	// UpdateMetricsOnce atomically rejects duplicate batch effects.
+	UpdateMetricsOnce(key string, metrics []models.Metrics) (bool, error)
 	// GetGauge returns a gauge value by name.
 	GetGauge(name string) (float64, bool)
 	// GetCounter returns a counter value by name.
@@ -134,12 +138,9 @@ func (h *MetricsHandler) UpdateMetricJSON(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	if err := h.service.UpdateMetrics([]models.Metrics{metric}); err != nil {
-		log.Printf("store metrics: %v", err)
-		http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+	if !h.storeBatch(w, r, []models.Metrics{metric}) {
 		return
 	}
-	h.audit(r, []string{metric.ID})
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metric); err != nil {
@@ -162,13 +163,8 @@ func (h *MetricsHandler) UpdateMetricsJSON(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	if len(metrics) > 0 {
-		if err := h.service.UpdateMetrics(metrics); err != nil {
-			log.Printf("store metrics: %v", err)
-			http.Error(w, "failed to store metrics", http.StatusInternalServerError)
-			return
-		}
-		h.audit(r, metricNames(metrics))
+	if !h.storeBatch(w, r, metrics) {
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -342,4 +338,30 @@ func metricNames(metrics []models.Metrics) []string {
 		names = append(names, metric.ID)
 	}
 	return names
+}
+
+// storeBatch acknowledges duplicates without publishing a second audit event.
+func (h *MetricsHandler) storeBatch(w http.ResponseWriter, r *http.Request, metrics []models.Metrics) bool {
+	key := ""
+	if values := r.Header.Values(delivery.Header); len(values) > 0 {
+		if len(values) != 1 || !delivery.ValidKey(values[0]) {
+			http.Error(w, "invalid idempotency key", http.StatusBadRequest)
+			return false
+		}
+		key = values[0]
+	}
+	applied, err := h.service.UpdateMetricsOnce(key, metrics)
+	if err != nil {
+		if errors.Is(err, delivery.ErrConflict) {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return false
+		}
+		log.Printf("store metrics: %v", err)
+		http.Error(w, "failed to store metrics", http.StatusInternalServerError)
+		return false
+	}
+	if applied {
+		h.audit(r, metricNames(metrics))
+	}
+	return true
 }
