@@ -100,7 +100,9 @@ func main() {
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
 	router.Use(trustedSubnet)
-	router.Use(appmiddleware.Decrypt(privateKey))
+	if privateKey != nil {
+		router.Use(appmiddleware.Decrypt(privateKey))
+	}
 	router.Use(appmiddleware.Gzip)
 	router.Use(appmiddleware.HashSHA256(cfg.Key))
 	router.Post("/update/{type}/{name}/{value}", metricsHandler.UpdateMetric)

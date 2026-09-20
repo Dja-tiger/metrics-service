@@ -182,3 +182,97 @@ func TestRunSucceedsAfterFailedBatchIsRecovered(t *testing.T) {
 		t.Fatalf("calls=%d delivered=%d", calls, delivered)
 	}
 }
+
+func TestRunPropagatesCollectorErrorAndFlushesMetrics(t *testing.T) {
+	for _, failDelivery := range []bool{false, true} {
+		name := "successful final delivery"
+		if failDelivery {
+			name = "failed final delivery"
+		}
+		t.Run(name, func(t *testing.T) {
+			oldMemory, oldCPU := readVirtualMemory, readCPUPercent
+			t.Cleanup(func() { readVirtualMemory, readCPUPercent = oldMemory, oldCPU })
+			collectionErr := errors.New("memory collection failed")
+			deliveryErr := errors.New("server unavailable")
+			readVirtualMemory = func() (*mem.VirtualMemoryStat, error) { return nil, collectionErr }
+			readCPUPercent = func(time.Duration, bool) ([]float64, error) { return []float64{12}, nil }
+			var delivered int64
+			var finalCPU bool
+			client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+				defer r.Body.Close()
+				if failDelivery {
+					return nil, deliveryErr
+				}
+				reader, err := gzip.NewReader(r.Body)
+				if err != nil {
+					return nil, err
+				}
+				defer reader.Close()
+				var batch []models.Metrics
+				if err := json.NewDecoder(reader).Decode(&batch); err != nil {
+					return nil, err
+				}
+				for _, m := range batch {
+					if m.ID == "TestCounter" {
+						delivered += *m.Delta
+					}
+					if m.ID == "CPUutilization1" && *m.Value == 12 {
+						finalCPU = true
+					}
+				}
+				return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader("")), Header: make(http.Header)}, nil
+			})}
+			store := NewStore()
+			store.IncCounter("TestCounter", 7)
+			a, err := NewAgent("http://server", time.Hour, time.Hour, WithStore(store), WithHTTPClient(client), WithRetrySleep(func(time.Duration) {}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err = a.Run(ctx)
+			if ctx.Err() != nil {
+				t.Fatal("collector failure did not stop the other loops")
+			}
+			if !errors.Is(err, collectionErr) {
+				t.Fatalf("collector error lost: %v", err)
+			}
+			if failDelivery {
+				if !errors.Is(err, deliveryErr) || len(a.takePending()) == 0 {
+					t.Fatalf("final delivery error or pending data lost: %v", err)
+				}
+			} else if delivered != 7 || !finalCPU {
+				t.Fatalf("final metrics lost: counter=%d cpu=%v", delivered, finalCPU)
+			}
+		})
+	}
+}
+
+func TestSystemPollLoopReturnsPeriodicError(t *testing.T) {
+	oldMemory, oldCPU := readVirtualMemory, readCPUPercent
+	t.Cleanup(func() { readVirtualMemory, readCPUPercent = oldMemory, oldCPU })
+	calls := 0
+	want := errors.New("CPU collection failed")
+	readVirtualMemory = func() (*mem.VirtualMemoryStat, error) {
+		return &mem.VirtualMemoryStat{Total: 100, Free: 50}, nil
+	}
+	readCPUPercent = func(time.Duration, bool) ([]float64, error) {
+		calls++
+		if calls == 2 {
+			return nil, want
+		}
+		return []float64{12}, nil
+	}
+	a, err := NewAgent("http://server", time.Millisecond, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := a.SystemPollLoop(ctx); !errors.Is(err, want) {
+		t.Fatalf("periodic error lost: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("calls=%d, want 2", calls)
+	}
+}

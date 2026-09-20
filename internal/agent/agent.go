@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
@@ -219,13 +220,19 @@ func (a *Agent) requeue(batch delivery.Batch) {
 // Run collects and reports metrics until cancellation, then drains all work and
 // sends a final snapshot. The server must remain available until Run returns.
 func (a *Agent) Run(ctx context.Context) error {
-	var collectors sync.WaitGroup
-	collectors.Go(func() { a.PollLoop(ctx) })
-	collectors.Go(func() { a.SystemPollLoop(ctx) })
-	a.ReportLoop(ctx)
-	collectors.Wait()
+	group, runCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		a.PollLoop(runCtx)
+		return nil
+	})
+	group.Go(func() error { return a.SystemPollLoop(runCtx) })
+	group.Go(func() error {
+		a.ReportLoop(runCtx)
+		return nil
+	})
+	err := group.Wait()
 	// Retry the original failed batches before sending the final collected snapshot.
-	return a.ReportOnce()
+	return errors.Join(err, a.ReportOnce())
 }
 
 // PollLoop collects runtime metrics periodically until the context is canceled.
@@ -245,13 +252,13 @@ func (a *Agent) PollLoop(ctx context.Context) {
 }
 
 // ReportLoop sends metric snapshots periodically using a bounded worker pool.
-func (a *Agent) ReportLoop(ctx context.Context) (err error) {
+// Delivery failures are logged and requeued; Run checks the final delivery result.
+func (a *Agent) ReportLoop(ctx context.Context) {
 	jobs := make(chan delivery.Batch, a.rateLimit)
 	workers := a.startReportWorkers(jobs)
 	defer func() {
 		close(jobs)
 		workers.Wait()
-		err = workers.err
 	}()
 
 	ticker := time.NewTicker(a.reportInterval)
@@ -289,14 +296,8 @@ func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- delivery.Batch) {
 	}
 }
 
-type reportWorkers struct {
-	sync.WaitGroup
-	mu  sync.Mutex
-	err error
-}
-
-func (a *Agent) startReportWorkers(jobs <-chan delivery.Batch) *reportWorkers {
-	var workers reportWorkers
+func (a *Agent) startReportWorkers(jobs <-chan delivery.Batch) *sync.WaitGroup {
+	var workers sync.WaitGroup
 	workers.Add(a.rateLimit)
 
 	for range a.rateLimit {
@@ -306,11 +307,6 @@ func (a *Agent) startReportWorkers(jobs <-chan delivery.Batch) *reportWorkers {
 				if err := a.sendBatch(batch); err != nil {
 					a.requeue(batch)
 					log.Printf("report metrics: %v", err)
-					workers.mu.Lock()
-					if workers.err == nil {
-						workers.err = err
-					}
-					workers.mu.Unlock()
 				}
 			}
 		}()

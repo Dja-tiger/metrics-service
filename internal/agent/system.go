@@ -33,18 +33,22 @@ func (a *Agent) PollSystemOnce() error {
 	return errors.Join(memoryErr, cpuErr)
 }
 
-// SystemPollLoop collects gopsutil metrics periodically until the context is canceled.
-func (a *Agent) SystemPollLoop(ctx context.Context) {
+// SystemPollLoop collects gopsutil metrics until cancellation or a collection error.
+func (a *Agent) SystemPollLoop(ctx context.Context) error {
 	ticker := time.NewTicker(a.pollInterval)
 	defer ticker.Stop()
 
-	_ = a.PollSystemOnce()
+	if err := a.PollSystemOnce(); err != nil {
+		return fmt.Errorf("collect system metrics: %w", err)
+	}
 	for {
 		select {
 		case <-ctx.Done():
-			return
+			return nil
 		case <-ticker.C:
-			_ = a.PollSystemOnce()
+			if err := a.PollSystemOnce(); err != nil {
+				return fmt.Errorf("collect system metrics: %w", err)
+			}
 		}
 	}
 }
