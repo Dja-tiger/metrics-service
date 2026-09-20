@@ -27,3 +27,6 @@ vendor/
 # Local configuration (keep *.example.json tracked)
 /server.json
 /agent.json
+
+# Local development files, including example encryption keys
+/.local/
