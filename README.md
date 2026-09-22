@@ -1,7 +1,8 @@
 # metrics-service
 
-Сервис сбора метрик и алертинга: агент собирает метрики и передаёт их серверу.
-Проект основан на учебном шаблоне Yandex Practicum.
+Агент собирает метрики Go runtime, памяти и CPU и отправляет их серверу батчами
+по HTTP или gRPC. Сервер хранит метрики в памяти, JSON-файле или PostgreSQL.
+Поддерживаются gzip, подпись HTTP-запросов, шифрование и аудит обновлений.
 
 ## Начало работы
 
@@ -25,21 +26,33 @@ go run ./cmd/agent
 Все команды ниже выполняются из корня репозитория, если не указано иначе.
 Пути к файлам относительные и не зависят от расположения проекта на компьютере.
 
-## Обновление шаблона
+## HTTP API
 
-Чтобы иметь возможность получать обновления автотестов и других частей шаблона, выполните команду:
+По умолчанию сервер слушает `localhost:8080`. Агент собирает метрики раз в 2 секунды
+и отправляет их раз в 10 секунд.
 
+| Метод и путь | Назначение |
+| --- | --- |
+| `POST /updates/` | Записать массив метрик в JSON |
+| `POST /update/` | Записать одну метрику в JSON |
+| `POST /value/` | Получить метрику по полям `id` и `type` |
+| `POST /update/{type}/{name}/{value}` | Записать метрику через параметры пути |
+| `GET /value/{type}/{name}` | Получить значение в текстовом виде |
+| `GET /` | Посмотреть все метрики на HTML-странице |
+| `GET /ping` | Проверить подключение к PostgreSQL |
+
+Пример записи счётчика и чтения его значения:
+
+```bash
+curl -X POST http://localhost:8080/updates/ \
+  -H 'Content-Type: application/json' \
+  -d '[{"id":"PollCount","type":"counter","delta":1}]'
+curl http://localhost:8080/value/counter/PollCount
 ```
-git remote add -m v2 template https://github.com/Yandex-Practicum/go-musthave-metrics-tpl.git
-```
 
-Для обновления кода автотестов выполните команду:
-
-```
-git fetch template && git checkout template/v2 .github
-```
-
-Затем добавьте полученные изменения в свой репозиторий.
+`gauge` заменяется новым значением, `counter` увеличивается на переданную величину.
+Без настроенного PostgreSQL `/ping` возвращает 500; это не проверка файлового
+хранилища или памяти.
 
 ## Доверенная подсеть
 
@@ -137,6 +150,15 @@ go test ./integration -run TestGracefulSignals -count=1 -v
   "crypto_key": ""
 }
 ```
+
+Подготовьте локальные конфиги из примеров (существующие файлы не перезаписываются):
+
+```bash
+cp -n server.example.json server.json
+cp -n agent.example.json agent.json
+```
+
+Запуск в отдельных терминалах:
 
 ```bash
 go run ./cmd/server -config=server.json
@@ -293,61 +315,74 @@ go run ./cmd/linter ./...
 go test ./cmd/linter -count=1
 ```
 
-## Запуск автотестов
+## Проверки
 
-Для успешного запуска автотестов называйте ветки `iter<number>`, где `<number>` — порядковый номер инкремента. Например, в ветке с названием `iter4` запустятся автотесты для инкрементов с первого по четвёртый.
+```bash
+go test -race ./... -count=1
+go vet ./...
+go run ./cmd/linter ./...
+```
 
-При мёрже ветки с инкрементом в основную ветку `main` будут запускаться все автотесты.
-
-Подробнее про локальный и автоматический запуск читайте в [README автотестов](https://github.com/Yandex-Practicum/go-autotests).
+Учебные автотесты запускаются в GitHub Actions при обновлении PR.
+Имена веток имеют вид `iter<number>`; выбор проверок задан в
+[workflow автотестов](.github/workflows/mertricstest.yml).
 
 ## Структура проекта
 
-Приведённая в этом репозитории структура проекта является рекомендуемой, но не обязательной.
+- `cmd/agent`, `cmd/server` — запуск приложений.
+- `internal/agent` — сбор метрик, очередь отправки и повторы.
+- `internal/handler`, `internal/middleware` — HTTP API и обработка запросов.
+- `internal/grpcapi`, `internal/proto` — gRPC API и protobuf-сообщения.
+- `internal/service`, `internal/repository` — обновление и хранение метрик.
+- `internal/config` — параметры из JSON, флагов и окружения.
+- `internal/audit`, `internal/encryption`, `internal/signature` — аудит и защита HTTP.
+- `cmd/reset`, `cmd/linter`, `internal/pool` — генератор Reset, анализатор и пул объектов.
+- `integration` — тесты запуска и завершения процессов.
+- `profiles` — сохранённые профили памяти.
 
-Это лишь пример организации кода, который поможет вам в реализации сервиса.
+## Производительность
 
-При необходимости можно вносить изменения в структуру проекта, использовать любые библиотеки и предпочитаемые структурные паттерны организации кода приложения, например:
-- **DDD** (Domain-Driven Design)
-- **Clean Architecture**
-- **Hexagonal Architecture**
-- **Layered Architecture**
-
-## Профилирование памяти
-
-Для инкремента 17 добавлены benchmark-тесты для основных компонентов сервиса:
-
-- сохранение и batch-обновление метрик в `MemStorage`;
-- обработка batch JSON-запроса `POST /updates/`;
-- отправка batch-метрик агентом;
-- snapshot метрик агента;
-- audit-наблюдатели;
-- расчёт и проверка SHA256-подписи.
-
-Базовый профиль памяти сохранён в `profiles/base.pprof`, итоговый профиль после оптимизации — в `profiles/result.pprof`.
-
-Команды для снятия профилей:
+Бенчмарки проверяют запись и обновление хранилища, HTTP-обработчики, отправку
+батчей, сбор снимка метрик, аудит и подпись запросов.
 
 ```bash
-go test ./internal/repository -run=^$ -bench=BenchmarkMemStorageSaveToFile -benchmem -memprofile=profiles/base.pprof
-go test ./internal/repository -run=^$ -bench=BenchmarkMemStorageSaveToFile -benchmem -memprofile=profiles/result.pprof
-pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
+go test ./internal/... -run='^$' -bench=. -benchmem
 ```
 
-До оптимизации сохранение метрик формировало полный pretty JSON в памяти через `json.MarshalIndent`, а затем записывало его в файл. После анализа `pprof top`, `pprof list` и `pprof peek` сохранение переведено на запись компактного JSON через `json.Encoder`, а создание snapshot-метрик уменьшает количество отдельных heap-аллокаций для значений `Value` и `Delta`.
+Для нового профиля сохранения в файл:
 
-Ниже сохранены исторические результаты инкремента 17, а не измерение текущей версии.
-Имена `github.com/Dja-tiger/metrics-service/...` в выводе pprof — пути Go-пакетов,
-а не абсолютные пути на компьютере разработчика.
+```bash
+mkdir -p .local/profiles
+go test ./internal/repository -run='^$' -bench='^BenchmarkMemStorageSaveToFile$' \
+  -benchmem -memprofile=.local/profiles/current.pprof -o .local/profiles/repository.test
+go tool pprof -alloc_space -top .local/profiles/current.pprof
+```
 
-Результат benchmark для `SaveToFile`:
+### Сохранённый замер
+
+В `profiles/base.pprof` и `profiles/result.pprof` остались профили до и после
+оптимизации записи JSON. Вместо `json.MarshalIndent` используется `json.Encoder`,
+а значения метрик при создании снимка размещаются в общих слайсах.
+
+Эти результаты сняты 17 июля 2026 года. После этого код менялся, поэтому для оценки
+текущей версии нужен новый замер. Два последовательных запуска одной версии не
+воспроизводят сравнение «до/после».
+
+Сравнить сохранённые профили:
+
+```bash
+go tool pprof -alloc_space -top -diff_base=profiles/base.pprof profiles/result.pprof
+```
+
+Сохранение набора из 512 gauge и 512 counter:
 
 ```text
 До:    717533 ns/op  255377 B/op  1044 allocs/op
 После: 405814 ns/op   78191 B/op    19 allocs/op
 ```
 
-Результат сравнения профилей:
+<details>
+<summary>Вывод сравнения профилей памяти</summary>
 
 ```text
 File: repository.test
@@ -379,7 +414,9 @@ Dropped 68 nodes (cum <= 3.32MB)
          0     0% 49.07%  -321.88MB 48.54%  testing.(*B).runN
 ```
 
-## gRPC (инкремент 28)
+</details>
+
+## gRPC
 
 HTTP API сохранён. Дополнительный gRPC listener сервера и gRPC-транспорт агента
 включаются непустым параметром `-grpc-address`, переменной `GRPC_ADDRESS`
