@@ -44,6 +44,11 @@ func main() {
 		log.Fatal(err)
 	}
 
+	trustedSubnet, err := appmiddleware.TrustedSubnet(cfg.TrustedSubnet)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 	privateKey, err := encryption.LoadPrivateKey(cfg.CryptoKey)
 	if err != nil {
 		log.Fatal(err)
@@ -92,6 +97,7 @@ func main() {
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
+	router.Use(trustedSubnet)
 	if privateKey != nil {
 		router.Use(appmiddleware.Decrypt(privateKey))
 	}
