@@ -4,15 +4,22 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log"
 	"math/rand"
 	"net/http"
 	"runtime"
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
+	"github.com/Dja-tiger/metrics-service/internal/encryption"
 	models "github.com/Dja-tiger/metrics-service/internal/model"
 	"github.com/Dja-tiger/metrics-service/internal/retry"
 	"github.com/Dja-tiger/metrics-service/internal/signature"
@@ -22,12 +29,15 @@ var errRetriableSend = errors.New("retriable send error")
 
 // Agent collects runtime and system metrics and reports them to a metrics server.
 type Agent struct {
+	pendingMu      sync.Mutex
+	pending        []delivery.Batch
 	pollInterval   time.Duration
 	reportInterval time.Duration
 	serverURL      string
 	client         *http.Client
 	store          *Store
 	key            string
+	publicKey      *rsa.PublicKey
 	rateLimit      int
 	retrySleep     func(time.Duration)
 }
@@ -58,6 +68,11 @@ func WithKey(key string) Option {
 	return func(a *Agent) {
 		a.key = key
 	}
+}
+
+// WithPublicKey enables request encryption. The key must not be modified after construction.
+func WithPublicKey(key *rsa.PublicKey) Option {
+	return func(a *Agent) { a.publicKey = key }
 }
 
 // WithRateLimit configures the maximum number of concurrent report workers.
@@ -155,8 +170,60 @@ func (a *Agent) PollOnce() {
 }
 
 // ReportOnce sends a single snapshot of currently collected metrics.
-func (a *Agent) ReportOnce() {
-	_ = a.sendMetrics(a.store.SnapshotMetrics())
+func (a *Agent) ReportOnce() error {
+	batches := a.takePending()
+	var result error
+	for _, batch := range batches {
+		if err := a.sendBatch(batch); err != nil {
+			a.requeue(batch)
+			result = errors.Join(result, err)
+		}
+	}
+	if result != nil {
+		return result
+	}
+	metrics := a.store.SnapshotMetrics()
+	if len(metrics) == 0 {
+		return nil
+	}
+	batch := delivery.New(metrics)
+	if err := a.sendBatch(batch); err != nil {
+		a.requeue(batch)
+		return err
+	}
+	return nil
+}
+
+func (a *Agent) takePending() []delivery.Batch {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	batches := a.pending
+	a.pending = nil
+	return batches
+}
+
+func (a *Agent) requeue(batch delivery.Batch) {
+	a.pendingMu.Lock()
+	defer a.pendingMu.Unlock()
+	a.pending = append(a.pending, batch)
+}
+
+// Run collects and reports metrics until cancellation, then drains all work and
+// sends a final snapshot. The server must remain available until Run returns.
+func (a *Agent) Run(ctx context.Context) error {
+	group, runCtx := errgroup.WithContext(ctx)
+	group.Go(func() error {
+		a.PollLoop(runCtx)
+		return nil
+	})
+	group.Go(func() error { return a.SystemPollLoop(runCtx) })
+	group.Go(func() error {
+		a.ReportLoop(runCtx)
+		return nil
+	})
+	err := group.Wait()
+	// Retry the original failed batches before sending the final collected snapshot.
+	return errors.Join(err, a.ReportOnce())
 }
 
 // PollLoop collects runtime metrics periodically until the context is canceled.
@@ -176,8 +243,9 @@ func (a *Agent) PollLoop(ctx context.Context) {
 }
 
 // ReportLoop sends metric snapshots periodically using a bounded worker pool.
+// Delivery failures are logged and requeued; Run checks the final delivery result.
 func (a *Agent) ReportLoop(ctx context.Context) {
-	jobs := make(chan []models.Metrics, a.rateLimit)
+	jobs := make(chan delivery.Batch, a.rateLimit)
 	workers := a.startReportWorkers(jobs)
 	defer func() {
 		close(jobs)
@@ -198,27 +266,39 @@ func (a *Agent) ReportLoop(ctx context.Context) {
 	}
 }
 
-func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- []models.Metrics) {
-	metrics := a.store.SnapshotMetrics()
-	if len(metrics) == 0 {
-		return
+func (a *Agent) enqueueReport(ctx context.Context, jobs chan<- delivery.Batch) {
+	batches := a.takePending()
+	if len(batches) == 0 {
+		metrics := a.store.SnapshotMetrics()
+		if len(metrics) == 0 {
+			return
+		}
+		batches = []delivery.Batch{delivery.New(metrics)}
 	}
-
-	select {
-	case jobs <- metrics:
-	case <-ctx.Done():
+	for i, batch := range batches {
+		select {
+		case jobs <- batch:
+		case <-ctx.Done():
+			for _, pending := range batches[i:] {
+				a.requeue(pending)
+			}
+			return
+		}
 	}
 }
 
-func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup {
+func (a *Agent) startReportWorkers(jobs <-chan delivery.Batch) *sync.WaitGroup {
 	var workers sync.WaitGroup
 	workers.Add(a.rateLimit)
 
 	for range a.rateLimit {
 		go func() {
 			defer workers.Done()
-			for metrics := range jobs {
-				_ = a.sendMetrics(metrics)
+			for batch := range jobs {
+				if err := a.sendBatch(batch); err != nil {
+					a.requeue(batch)
+					log.Printf("report metrics: %v", err)
+				}
 			}
 		}()
 	}
@@ -227,6 +307,14 @@ func (a *Agent) startReportWorkers(jobs <-chan []models.Metrics) *sync.WaitGroup
 }
 
 func (a *Agent) sendMetrics(metrics []models.Metrics) error {
+	if len(metrics) == 0 {
+		return nil
+	}
+	return a.sendBatch(delivery.New(metrics))
+}
+
+func (a *Agent) sendBatch(batch delivery.Batch) error {
+	metrics := batch.Metrics
 	if len(metrics) == 0 {
 		return nil
 	}
@@ -250,20 +338,32 @@ func (a *Agent) sendMetrics(metrics []models.Metrics) error {
 		hash = signature.Calculate(body, a.key)
 	}
 
+	payload := compressedBody.Bytes()
+	if a.publicKey != nil {
+		payload, err = encryption.Encrypt(a.publicKey, payload)
+		if err != nil {
+			return fmt.Errorf("encrypt metrics: %w", err)
+		}
+	}
+
 	return retry.DoWithSleeper(func() error {
-		return a.sendCompressedMetrics(compressedBody.Bytes(), hash)
+		return a.sendCompressedMetrics(payload, hash, batch.ID)
 	}, isRetriableSendError, a.retrySleep)
 }
 
-func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
+func (a *Agent) sendCompressedMetrics(body []byte, hash string, batchID string) error {
 	url := fmt.Sprintf("%s/updates/", a.serverURL)
 	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return fmt.Errorf("create request: %w", err)
 	}
+	req.Header.Set(delivery.Header, batchID)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-Encoding", "gzip")
 	req.Header.Set("Accept-Encoding", "gzip")
+	if a.publicKey != nil {
+		req.Header.Set(encryption.Header, encryption.Algorithm)
+	}
 	if hash != "" {
 		req.Header.Set(signature.Header, hash)
 	}
@@ -273,6 +373,8 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string) error {
 		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
 	defer resp.Body.Close()
+	// Drain the acknowledgement so the transport can reuse the connection.
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("unexpected status code: %d", resp.StatusCode)

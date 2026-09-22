@@ -1,6 +1,8 @@
 package service
 
 import (
+	"fmt"
+	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
@@ -10,7 +12,17 @@ import (
 // MetricsService contains metric business logic.
 type MetricsService struct {
 	repo         repository.MetricsRepository
-	saveOnUpdate func()
+	saveOnUpdate func() error
+	persistence  *persistence
+}
+
+// Close stops background persistence and saves the final snapshot once.
+// Call it after all handlers and other metric writers have finished.
+func (s *MetricsService) Close() error {
+	if s.persistence == nil {
+		return nil
+	}
+	return s.persistence.close()
 }
 
 // NewMetricsService creates a metric service backed by a repository.
@@ -26,43 +38,52 @@ func NewMetricsServiceWithPersistence(repo repository.MetricsRepository, storage
 }
 
 // SetSaveOnUpdate configures a callback called after metric updates.
-func (s *MetricsService) SetSaveOnUpdate(save func()) {
+func (s *MetricsService) SetSaveOnUpdate(save func() error) {
 	s.saveOnUpdate = save
 }
 
 // UpdateGauge stores the latest gauge value.
-func (s *MetricsService) UpdateGauge(name string, value float64) {
-	s.repo.UpdateGauge(name, value)
-	s.save()
+func (s *MetricsService) UpdateGauge(name string, value float64) error {
+	if err := s.repo.UpdateGauge(name, value); err != nil {
+		return err
+	}
+	return s.save()
 }
 
 // UpdateCounter increments a counter value.
-func (s *MetricsService) UpdateCounter(name string, value int64) {
-	s.repo.UpdateCounter(name, value)
-	s.save()
+func (s *MetricsService) UpdateCounter(name string, value int64) error {
+	if err := s.repo.UpdateCounter(name, value); err != nil {
+		return err
+	}
+	return s.save()
 }
 
 // UpdateMetrics applies several metric updates and triggers persistence once.
-func (s *MetricsService) UpdateMetrics(metrics []models.Metrics) {
+func (s *MetricsService) UpdateMetrics(metrics []models.Metrics) error {
 	if batchRepo, ok := s.repo.(repository.MetricsBatchRepository); ok {
-		batchRepo.UpdateMetrics(metrics)
-		s.save()
-		return
+		if err := batchRepo.UpdateMetrics(metrics); err != nil {
+			return err
+		}
+		return s.save()
 	}
 
 	for _, metric := range metrics {
 		switch metric.MType {
 		case models.Gauge:
 			if metric.Value != nil {
-				s.repo.UpdateGauge(metric.ID, *metric.Value)
+				if err := s.repo.UpdateGauge(metric.ID, *metric.Value); err != nil {
+					return err
+				}
 			}
 		case models.Counter:
 			if metric.Delta != nil {
-				s.repo.UpdateCounter(metric.ID, *metric.Delta)
+				if err := s.repo.UpdateCounter(metric.ID, *metric.Delta); err != nil {
+					return err
+				}
 			}
 		}
 	}
-	s.save()
+	return s.save()
 }
 
 // GetGauge returns a gauge value by name.
@@ -85,8 +106,36 @@ func (s *MetricsService) GetAllCounters() map[string]int64 {
 	return s.repo.GetAllCounters()
 }
 
-func (s *MetricsService) save() {
+func (s *MetricsService) save() error {
 	if s.saveOnUpdate != nil {
-		s.saveOnUpdate()
+		return s.saveOnUpdate()
 	}
+	return nil
+}
+
+// UpdateMetricsOnce deduplicates a keyed batch; empty keys preserve legacy behavior.
+func (s *MetricsService) UpdateMetricsOnce(key string, metrics []models.Metrics) (bool, error) {
+	if len(metrics) == 0 {
+		return false, nil
+	}
+	if key == "" {
+		return true, s.UpdateMetrics(metrics)
+	}
+	if !delivery.ValidKey(key) {
+		return false, fmt.Errorf("invalid idempotency key")
+	}
+	repo, ok := s.repo.(repository.IdempotentRepository)
+	if !ok {
+		return false, fmt.Errorf("storage does not support idempotent batches")
+	}
+	fingerprint, err := delivery.Fingerprint(metrics)
+	if err != nil {
+		return false, fmt.Errorf("fingerprint metrics: %w", err)
+	}
+	applied, err := repo.UpdateMetricsOnce(key, fingerprint, metrics)
+	if err != nil {
+		return false, err
+	}
+	// Repeat persistence even for a duplicate: an earlier synchronous save may have failed.
+	return applied, s.save()
 }

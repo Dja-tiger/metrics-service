@@ -5,9 +5,9 @@ import models "github.com/Dja-tiger/metrics-service/internal/model"
 // MetricsRepository abstracts metric storage.
 type MetricsRepository interface {
 	// UpdateGauge stores the latest gauge value.
-	UpdateGauge(name string, value float64)
+	UpdateGauge(name string, value float64) error
 	// UpdateCounter increments a counter value.
-	UpdateCounter(name string, value int64)
+	UpdateCounter(name string, value int64) error
 	// GetGauge returns a gauge value by name.
 	GetGauge(name string) (float64, bool)
 	// GetCounter returns a counter value by name.
@@ -21,5 +21,5 @@ type MetricsRepository interface {
 // MetricsBatchRepository can update multiple metrics in one storage-specific operation.
 type MetricsBatchRepository interface {
 	// UpdateMetrics applies several metric updates at once.
-	UpdateMetrics(metrics []models.Metrics)
+	UpdateMetrics(metrics []models.Metrics) error
 }
