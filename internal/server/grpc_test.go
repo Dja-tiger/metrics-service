@@ -8,8 +8,9 @@ import (
 	"time"
 
 	pb "github.com/Dja-tiger/metrics-service/internal/proto"
+	"github.com/Dja-tiger/metrics-service/internal/testutil"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 )
 
 type blockingMetrics struct {
@@ -21,7 +22,7 @@ type blockingMetrics struct {
 func (s *blockingMetrics) UpdateMetrics(context.Context, *pb.UpdateMetricsRequest) (*pb.UpdateMetricsResponse, error) {
 	close(s.entered)
 	<-s.release
-	return &pb.UpdateMetricsResponse{}, nil
+	return pb.UpdateMetricsResponse_builder{}.Build(), nil
 }
 
 func TestGRPCShutdownDrainsBeforeFlush(t *testing.T) {
@@ -36,7 +37,8 @@ func TestGRPCShutdownDrainsBeforeFlush(t *testing.T) {
 	}
 	defer rpcListener.Close()
 	impl := &blockingMetrics{entered: make(chan struct{}), release: make(chan struct{})}
-	rpc := grpc.NewServer()
+	fixture := testutil.NewTLS(t)
+	rpc := grpc.NewServer(grpc.Creds(credentials.NewTLS(fixture.Server)))
 	pb.RegisterMetricsServer(rpc, impl)
 	defer rpc.Stop()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -46,7 +48,7 @@ func TestGRPCShutdownDrainsBeforeFlush(t *testing.T) {
 	go func() {
 		done <- serveBoth(ctx, &http.Server{}, rpc, httpListener, rpcListener, func() error { close(flushed); return nil })
 	}()
-	conn, err := grpc.NewClient(rpcListener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	conn, err := grpc.NewClient(rpcListener.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(fixture.Client)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +57,7 @@ func TestGRPCShutdownDrainsBeforeFlush(t *testing.T) {
 	requestCtx, requestCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer requestCancel()
 	go func() {
-		_, err := pb.NewMetricsClient(conn).UpdateMetrics(requestCtx, &pb.UpdateMetricsRequest{})
+		_, err := pb.NewMetricsClient(conn).UpdateMetrics(requestCtx, pb.UpdateMetricsRequest_builder{}.Build())
 		requestDone <- err
 	}()
 	select {

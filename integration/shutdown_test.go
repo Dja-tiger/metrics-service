@@ -15,6 +15,7 @@ import (
 	"time"
 
 	models "github.com/Dja-tiger/metrics-service/internal/model"
+	"github.com/Dja-tiger/metrics-service/internal/testutil"
 )
 
 type process struct {
@@ -29,7 +30,7 @@ func start(t *testing.T, binary string, args ...string) *process {
 	p.cmd.Stdout = &p.output
 	p.cmd.Stderr = &p.output
 	// Ignore the developer's runtime configuration for isolated process tests.
-	configVars := map[string]bool{"GRPC_ADDRESS": true, "TRUSTED_SUBNET": true, "CONFIG": true, "ADDRESS": true, "REPORT_INTERVAL": true, "POLL_INTERVAL": true, "RATE_LIMIT": true, "KEY": true, "CRYPTO_KEY": true, "STORE_INTERVAL": true, "FILE_STORAGE_PATH": true, "STORE_FILE": true, "RESTORE": true, "DATABASE_DSN": true, "AUDIT_FILE": true, "AUDIT_URL": true}
+	configVars := map[string]bool{"GRPC_TLS_CERT": true, "GRPC_TLS_KEY": true, "GRPC_TLS_CA": true, "GRPC_ADDRESS": true, "TRUSTED_SUBNET": true, "CONFIG": true, "ADDRESS": true, "REPORT_INTERVAL": true, "POLL_INTERVAL": true, "RATE_LIMIT": true, "KEY": true, "CRYPTO_KEY": true, "STORE_INTERVAL": true, "FILE_STORAGE_PATH": true, "STORE_FILE": true, "RESTORE": true, "DATABASE_DSN": true, "AUDIT_FILE": true, "AUDIT_URL": true}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		if !configVars[name] {
@@ -60,6 +61,7 @@ func (p *process) stop(t *testing.T, signal syscall.Signal) {
 }
 
 func TestGracefulSignals(t *testing.T) {
+	fixture := testutil.NewTLS(t)
 	dir := t.TempDir()
 	binaries := map[string]string{}
 	for _, app := range []string{"server", "agent"} {
@@ -90,7 +92,7 @@ func TestGracefulSignals(t *testing.T) {
 					_ = listener.Close()
 				}
 				file := filepath.Join(t.TempDir(), "metrics.json")
-				server := start(t, binaries["server"], "-a="+addr, "-f="+file, "-i=3600", "-r=false", "-grpc-address="+grpcAddr)
+				server := start(t, binaries["server"], "-a="+addr, "-f="+file, "-i=3600", "-r=false", "-grpc-address="+grpcAddr, "-grpc-tls-cert="+fixture.CertFile, "-grpc-tls-key="+fixture.KeyFile)
 				client := &http.Client{Timeout: time.Second}
 				waitFor(t, func() bool {
 					r, err := client.Get("http://" + addr + "/")
@@ -101,7 +103,7 @@ func TestGracefulSignals(t *testing.T) {
 					_ = r.Body.Close()
 					return r.StatusCode == 200
 				})
-				agent := start(t, binaries["agent"], "-a="+addr, "-r=1", "-p=3600", "-grpc-address="+grpcAddr)
+				agent := start(t, binaries["agent"], "-a="+addr, "-r=1", "-p=3600", "-grpc-address="+grpcAddr, "-grpc-tls-ca="+fixture.CertFile)
 				waitFor(t, func() bool {
 					r, err := client.Get("http://" + addr + "/value/counter/PollCount")
 					if err != nil {

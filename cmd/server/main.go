@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
 	"os/signal"
@@ -46,9 +47,19 @@ func main() {
 		log.Fatal(err)
 	}
 
-	trustedSubnet, err := appmiddleware.TrustedSubnet(cfg.TrustedSubnet)
-	if err != nil {
-		log.Fatal(err)
+	var trustedSubnet func(http.Handler) http.Handler
+	if cfg.TrustedSubnet != "" {
+		trustedSubnet, err = appmiddleware.TrustedSubnet(cfg.TrustedSubnet)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	var grpcTLS *tls.Config
+	if cfg.GRPCAddress != "" {
+		grpcTLS, err = grpcapi.LoadServerTLS(cfg.GRPCTLSCert, cfg.GRPCTLSKey)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	privateKey, err := encryption.LoadPrivateKey(cfg.CryptoKey)
@@ -99,7 +110,9 @@ func main() {
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
-	router.Use(trustedSubnet)
+	if trustedSubnet != nil {
+		router.Use(trustedSubnet)
+	}
 	if privateKey != nil {
 		router.Use(appmiddleware.Decrypt(privateKey))
 	}
@@ -120,7 +133,7 @@ func main() {
 	defer stop()
 	var grpcServer *grpc.Server
 	if cfg.GRPCAddress != "" {
-		grpcServer, err = grpcapi.NewServer(metricsService, cfg.TrustedSubnet, auditor, logger)
+		grpcServer, err = grpcapi.NewServer(metricsService, cfg.TrustedSubnet, auditor, logger, grpcTLS)
 		if err != nil {
 			log.Fatal(err)
 		}

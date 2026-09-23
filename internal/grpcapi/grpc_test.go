@@ -11,9 +11,12 @@ import (
 	pb "github.com/Dja-tiger/metrics-service/internal/proto"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
 	"github.com/Dja-tiger/metrics-service/internal/service"
+	"github.com/Dja-tiger/metrics-service/internal/testutil"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 )
@@ -21,8 +24,9 @@ import (
 func TestNetworkBatch(t *testing.T) {
 	for _, subnet := range []string{"", "127.0.0.0/8", "192.0.2.0/24"} {
 		t.Run(subnet, func(t *testing.T) {
+			fixture := testutil.NewTLS(t)
 			store := repository.NewMemStorage()
-			server, err := NewServer(service.NewMetricsService(store), subnet, nil, nil)
+			server, err := NewServer(service.NewMetricsService(store), subnet, nil, nil, fixture.Server)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -32,7 +36,7 @@ func TestNetworkBatch(t *testing.T) {
 			}
 			go server.Serve(listener)
 			t.Cleanup(server.Stop)
-			client, err := NewClient(listener.Addr().String())
+			client, err := NewClient(listener.Addr().String(), fixture.Client)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -68,12 +72,12 @@ func TestNetworkBatch(t *testing.T) {
 				t.Fatalf("gauge %f %v", got, ok)
 			}
 			// Raw clients without metadata must be rejected when the subnet is configured.
-			conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+			conn, err := grpc.NewClient(listener.Addr().String(), grpc.WithTransportCredentials(credentials.NewTLS(fixture.Client)))
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer conn.Close()
-			_, err = pb.NewMetricsClient(conn).UpdateMetrics(context.Background(), &pb.UpdateMetricsRequest{})
+			_, err = pb.NewMetricsClient(conn).UpdateMetrics(context.Background(), pb.UpdateMetricsRequest_builder{}.Build())
 			if subnet != "" && status.Code(err) != codes.PermissionDenied {
 				t.Fatalf("missing IP: %v", err)
 			}
@@ -116,8 +120,8 @@ func TestSubnet(t *testing.T) {
 func TestBatchValidation(t *testing.T) {
 	store := repository.NewMemStorage()
 	server := &metricsServer{service: service.NewMetricsService(store)}
-	for _, item := range []*pb.Metric{nil, {Id: ""}, {Id: "bad", Type: 99}, {Id: "nan", Value: math.NaN()}, {Id: "inf", Value: math.Inf(1)}} {
-		_, err := server.UpdateMetrics(context.Background(), &pb.UpdateMetricsRequest{Metrics: []*pb.Metric{{Id: "valid", Value: 10}, item}})
+	for _, item := range []*pb.Metric{nil, pb.Metric_builder{}.Build(), pb.Metric_builder{Id: "bad", Type: 99}.Build(), pb.Metric_builder{Id: "nan", Value: math.NaN()}.Build(), pb.Metric_builder{Id: "inf", Value: math.Inf(1)}.Build()} {
+		_, err := server.UpdateMetrics(context.Background(), pb.UpdateMetricsRequest_builder{Metrics: []*pb.Metric{pb.Metric_builder{Id: "valid", Value: 10}.Build(), item}}.Build())
 		if status.Code(err) != codes.InvalidArgument {
 			t.Fatalf("expected invalid: %v", err)
 		}
@@ -128,7 +132,7 @@ func TestBatchValidation(t *testing.T) {
 	if _, err := server.UpdateMetrics(context.Background(), nil); status.Code(err) != codes.InvalidArgument {
 		t.Fatal(err)
 	}
-	if _, err := server.UpdateMetrics(context.Background(), &pb.UpdateMetricsRequest{}); err != nil {
+	if _, err := server.UpdateMetrics(context.Background(), pb.UpdateMetricsRequest_builder{}.Build()); err != nil {
 		t.Fatal(err)
 	}
 	// Empty sends must not touch the connection.
@@ -138,6 +142,7 @@ func TestBatchValidation(t *testing.T) {
 }
 
 func TestStorageFailureReturnsInternal(t *testing.T) {
+	fixture := testutil.NewTLS(t)
 	db, err := repository.NewPostgresDB("host=localhost dbname=unused")
 	if err != nil {
 		t.Fatal(err)
@@ -145,7 +150,8 @@ func TestStorageFailureReturnsInternal(t *testing.T) {
 	if err := db.Close(); err != nil {
 		t.Fatal(err)
 	}
-	server, err := NewServer(service.NewMetricsService(repository.NewPostgresStorage(db)), "", nil, nil)
+	core, logs := observer.New(zap.DebugLevel)
+	server, err := NewServer(service.NewMetricsService(repository.NewPostgresStorage(db)), "", nil, zap.New(core), fixture.Server)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +161,7 @@ func TestStorageFailureReturnsInternal(t *testing.T) {
 	}
 	go server.Serve(listener)
 	t.Cleanup(server.Stop)
-	client, err := NewClient(listener.Addr().String())
+	client, err := NewClient(listener.Addr().String(), fixture.Client)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -165,10 +171,13 @@ func TestStorageFailureReturnsInternal(t *testing.T) {
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("failed storage acknowledged: %v", err)
 	}
+	if logs.FilterMessage("store grpc metrics failed").FilterLevelExact(zap.ErrorLevel).Len() != 1 {
+		t.Fatal("storage error was not logged at Error level")
+	}
 }
 
 func TestServerRequiresService(t *testing.T) {
-	if _, err := NewServer(nil, "", nil, nil); err == nil {
+	if _, err := NewServer(nil, "", nil, nil, nil); err == nil {
 		t.Error("nil service accepted")
 	}
 }

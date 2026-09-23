@@ -37,7 +37,11 @@ func main() {
 	var client *grpcapi.Client
 	var sender agent.BatchSender
 	if cfg.GRPCAddress != "" {
-		client, err = grpcapi.NewClient(cfg.GRPCAddress)
+		tlsConfig, tlsErr := grpcapi.LoadClientTLS(cfg.GRPCTLSCA)
+		if tlsErr != nil {
+			log.Fatal(tlsErr)
+		}
+		client, err = grpcapi.NewClient(cfg.GRPCAddress, tlsConfig)
 		if err != nil {
 			log.Fatal(err)
 		}

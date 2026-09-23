@@ -20,6 +20,10 @@ func TestGRPCConfig(t *testing.T) {
 		for _, tc := range tests {
 			t.Run(kind+"/"+tc.name, func(t *testing.T) {
 				prepareConfig(t, tc.args, tc.env)
+				if kind == "server" {
+					t.Setenv("GRPC_TLS_CERT", "test.crt")
+					t.Setenv("GRPC_TLS_KEY", "test.key")
+				}
 				var got string
 				if kind == "agent" {
 					cfg, err := LoadAgentConfig()
@@ -47,6 +51,10 @@ func TestGRPCRejectsIgnoredSecuritySettings(t *testing.T) {
 		for _, key := range []string{"KEY", "CRYPTO_KEY"} {
 			t.Run(kind+"/"+key, func(t *testing.T) {
 				prepareConfig(t, []string{"-grpc-address=localhost:9090"}, map[string]string{key: "configured"})
+				if kind == "server" {
+					t.Setenv("GRPC_TLS_CERT", "test.crt")
+					t.Setenv("GRPC_TLS_KEY", "test.key")
+				}
 				var err error
 				if kind == "agent" {
 					_, err = LoadAgentConfig()

@@ -12,6 +12,8 @@ import (
 type ServerConfig struct {
 	Address            string
 	GRPCAddress        string
+	GRPCTLSCert        string
+	GRPCTLSKey         string
 	StoreInterval      int
 	FileStoragePath    string
 	FileStorageEnabled bool
@@ -27,6 +29,8 @@ type ServerConfig struct {
 // LoadServerConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadServerConfig() (ServerConfig, error) {
 	grpcFlag := flag.String("grpc-address", "", "optional gRPC server address")
+	grpcTLSCertFlag := flag.String("grpc-tls-cert", "", "gRPC TLS certificate PEM file")
+	grpcTLSKeyFlag := flag.String("grpc-tls-key", "", "gRPC TLS private key PEM file")
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
@@ -41,6 +45,8 @@ func LoadServerConfig() (ServerConfig, error) {
 	flag.Parse()
 	if err := applyFile(*configPath, []fileOption{
 		{field: "grpc_address", flag: "grpc-address", env: []string{"GRPC_ADDRESS"}},
+		{field: "grpc_tls_cert", flag: "grpc-tls-cert", env: []string{"GRPC_TLS_CERT"}},
+		{field: "grpc_tls_key", flag: "grpc-tls-key", env: []string{"GRPC_TLS_KEY"}},
 		{field: "address", flag: "a", env: []string{"ADDRESS"}},
 		{field: "store_interval", flag: "i", env: []string{"STORE_INTERVAL"}, duration: true},
 		{field: "store_file", flag: "f", env: []string{"FILE_STORAGE_PATH", "STORE_FILE"}},
@@ -75,6 +81,15 @@ func LoadServerConfig() (ServerConfig, error) {
 		AuditFile:          *auditFileFlag,
 		AuditURL:           *auditURLFlag,
 		TrustedSubnet:      *trustedSubnetFlag,
+	}
+
+	cfg.GRPCTLSCert = *grpcTLSCertFlag
+	if value, ok := os.LookupEnv("GRPC_TLS_CERT"); ok {
+		cfg.GRPCTLSCert = value
+	}
+	cfg.GRPCTLSKey = *grpcTLSKeyFlag
+	if value, ok := os.LookupEnv("GRPC_TLS_KEY"); ok {
+		cfg.GRPCTLSKey = value
 	}
 
 	if value, ok := os.LookupEnv("GRPC_ADDRESS"); ok {
@@ -130,6 +145,10 @@ func LoadServerConfig() (ServerConfig, error) {
 
 	if err := validateSeconds("StoreInterval", cfg.StoreInterval); err != nil {
 		return ServerConfig{}, err
+	}
+
+	if cfg.GRPCAddress != "" && (cfg.GRPCTLSCert == "" || cfg.GRPCTLSKey == "") {
+		return ServerConfig{}, fmt.Errorf("gRPC requires GRPC_TLS_CERT/-grpc-tls-cert and GRPC_TLS_KEY/-grpc-tls-key")
 	}
 
 	if err := validateGRPCSecurity(cfg.GRPCAddress, cfg.Key, cfg.CryptoKey); err != nil {

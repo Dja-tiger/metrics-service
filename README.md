@@ -125,6 +125,8 @@ go test ./integration -run TestGracefulSignals -count=1 -v
 {
   "address": "localhost:8080",
   "grpc_address": "",
+  "grpc_tls_cert": "",
+  "grpc_tls_key": "",
   "restore": true,
   "store_interval": "5m",
   "store_file": "metrics-storage.json",
@@ -143,6 +145,7 @@ go test ./integration -run TestGracefulSignals -count=1 -v
 {
   "address": "localhost:8080",
   "grpc_address": "",
+  "grpc_tls_ca": "",
   "report_interval": "10s",
   "poll_interval": "2s",
   "rate_limit": 1,
@@ -423,12 +426,44 @@ HTTP API сохранён. Дополнительный gRPC listener серве
 или полем `"grpc_address"` JSON-конфигурации.
 Приоритет: окружение > явно переданный флаг > JSON > пустое значение (только HTTP).
 
-В двух терминалах:
+gRPC работает только через TLS. При включении gRPC серверу нужны сертификат и
+приватный ключ. Агент проверяет сертификат и имя сервера.
+
+| Приложение | Флаг | Переменная окружения | Поле JSON |
+| --- | --- | --- | --- |
+| Сервер | `-grpc-tls-cert` | `GRPC_TLS_CERT` | `grpc_tls_cert` |
+| Сервер | `-grpc-tls-key` | `GRPC_TLS_KEY` | `grpc_tls_key` |
+| Агент | `-grpc-tls-ca` | `GRPC_TLS_CA` | `grpc_tls_ca` |
+
+Для локального запуска создайте самоподписанный сертификат с адресами сервера
+в SAN (команда для OpenSSL с поддержкой `-addext`):
 
 ```sh
-go run ./cmd/server -a=localhost:8080 -grpc-address=localhost:9090 -t=127.0.0.0/8
-go run ./cmd/agent -grpc-address=127.0.0.1:9090 -r=10 -p=2 -l=2
+mkdir -p .local/grpc
+chmod 700 .local/grpc
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1" \
+  -keyout .local/grpc/server.key -out .local/grpc/server.crt
+chmod 600 .local/grpc/server.key
 ```
+
+Не добавляйте приватный ключ в Git; `.local/` уже исключён из репозитория.
+На другом хосте агенту нужен только доверенный сертификат, а не приватный ключ.
+Проверяйте источник сертификата перед передачей агенту. Если `grpc_tls_ca` пуст,
+агент использует системные корневые сертификаты — проверка TLS не отключается.
+
+Запуск в двух терминалах:
+
+```sh
+go run ./cmd/server -a=localhost:8080 -grpc-address=localhost:9090 \
+  -grpc-tls-cert=.local/grpc/server.crt -grpc-tls-key=.local/grpc/server.key \
+  -t=127.0.0.0/8
+go run ./cmd/agent -grpc-address=127.0.0.1:9090 \
+  -grpc-tls-ca=.local/grpc/server.crt -r=10 -p=2 -l=2
+```
+
+Это TLS с проверкой сервера, не mTLS: сертификат клиента не запрашивается.
 
 Агент отправляет protobuf-батчи через `metrics.Metrics/UpdateMetrics` с gzip.
 Метаданные `x-real-ip` содержат локальный IP фактического соединения.
@@ -442,22 +477,21 @@ Unary interceptor проверяет его по `trusted_subnet`; отсутс�
 При остановке агент завершает отправку, сервер дожидается HTTP и gRPC запросов
 и затем сохраняет итоговое состояние.
 
-В этой реализации gRPC работает без TLS. HTTP-подпись `KEY` и RSA-шифрование
+HTTP-подпись `KEY` и RSA-шифрование
 `CRYPTO_KEY` относятся только к HTTP, а не к protobuf-транспорту.
 Чтобы не отключать защиту молча, комбинация gRPC с непустым KEY или CRYPTO_KEY
 отклоняется при запуске агента и сервера. Используйте HTTP для подписанных/зашифрованных
-запросов. Для защищённого gRPC-соединения потребуется TLS.
+запросов; TLS защищает gRPC-соединение отдельно.
 
 Протокол: `internal/proto/metrics.proto`. Сгенерированные Go-файлы включены
-в репозиторий; для обычной сборки protoc не нужен. Перегенерация (требуется protoc):
+в репозиторий; для обычной сборки protoc не нужен. Go-код использует Opaque API:
+создание через builders, чтение через getters, изменение через setters. Формат
+proto3 в сети не изменён. Перегенерация (использован protoc 35.1):
 
 ```sh
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
-PATH="$(go env GOPATH)/bin:$PATH" protoc -I . \
-  --go_out=. --go_opt=paths=source_relative \
-  --go-grpc_out=. --go-grpc_opt=paths=source_relative \
-  internal/proto/metrics.proto
+PATH="$(go env GOPATH)/bin:$PATH" go generate ./internal/proto
 ```
 ## Повторная доставка батчей
 

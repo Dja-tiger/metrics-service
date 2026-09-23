@@ -1,6 +1,8 @@
 {
   "address": "localhost:8080",
   "grpc_address": "",
+  "grpc_tls_cert": "",
+  "grpc_tls_key": "",
   "restore": true,
   "store_interval": "5m",
   "store_file": "metrics-storage.json",

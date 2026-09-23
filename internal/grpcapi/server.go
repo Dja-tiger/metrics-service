@@ -3,6 +3,7 @@ package grpcapi
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"math"
@@ -16,6 +17,7 @@ import (
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
 	_ "google.golang.org/grpc/encoding/gzip"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
@@ -39,13 +41,12 @@ type metricsServer struct {
 }
 
 // NewServer registers the Metrics service and subnet and logging interceptors.
-func NewServer(service BatchService, subnet string, auditor Auditor, logger *zap.Logger) (*grpc.Server, error) {
+func NewServer(service BatchService, subnet string, auditor Auditor, logger *zap.Logger, tlsConfig *tls.Config) (*grpc.Server, error) {
 	if service == nil {
 		return nil, fmt.Errorf("metrics service is required")
 	}
-	check, err := TrustedSubnet(subnet)
-	if err != nil {
-		return nil, err
+	if tlsConfig == nil || len(tlsConfig.Certificates) == 0 {
+		return nil, fmt.Errorf("gRPC TLS server certificate is required")
 	}
 	if logger == nil {
 		logger = zap.NewNop()
@@ -56,7 +57,19 @@ func NewServer(service BatchService, subnet string, auditor Auditor, logger *zap
 		logger.Info("grpc request handled", zap.String("method", info.FullMethod), zap.Duration("duration", time.Since(start)), zap.String("status", status.Code(err).String()))
 		return response, err
 	}
-	server := grpc.NewServer(grpc.ChainUnaryInterceptor(logging, check))
+	interceptors := []grpc.UnaryServerInterceptor{logging}
+	if subnet != "" {
+		check, err := TrustedSubnet(subnet)
+		if err != nil {
+			return nil, err
+		}
+		interceptors = append(interceptors, check)
+	}
+	tlsConfig = tlsConfig.Clone()
+	if tlsConfig.MinVersion < tls.VersionTLS12 {
+		tlsConfig.MinVersion = tls.VersionTLS12
+	}
+	server := grpc.NewServer(grpc.Creds(credentials.NewTLS(tlsConfig)), grpc.ChainUnaryInterceptor(interceptors...))
 	pb.RegisterMetricsServer(server, &metricsServer{service: service, auditor: auditor, logger: logger})
 	return server, nil
 }
@@ -93,33 +106,33 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 		}
 		key = values[0]
 	}
-	metrics := make([]models.Metrics, 0, len(request.Metrics))
-	names := make([]string, 0, len(request.Metrics))
-	for _, item := range request.Metrics {
-		if item == nil || item.Id == "" {
+	metrics := make([]models.Metrics, 0, len(request.GetMetrics()))
+	names := make([]string, 0, len(request.GetMetrics()))
+	for _, item := range request.GetMetrics() {
+		if item == nil || item.GetId() == "" {
 			return nil, status.Error(codes.InvalidArgument, "metric id is required")
 		}
-		m := models.Metrics{ID: item.Id}
-		switch item.Type {
+		m := models.Metrics{ID: item.GetId()}
+		switch item.GetType() {
 		case pb.Metric_GAUGE:
-			if math.IsNaN(item.Value) || math.IsInf(item.Value, 0) {
+			if math.IsNaN(item.GetValue()) || math.IsInf(item.GetValue(), 0) {
 				return nil, status.Error(codes.InvalidArgument, "gauge must be finite")
 			}
-			v := item.Value
+			v := item.GetValue()
 			m.MType = models.Gauge
 			m.Value = &v
 		case pb.Metric_COUNTER:
-			d := item.Delta
+			d := item.GetDelta()
 			m.MType = models.Counter
 			m.Delta = &d
 		default:
 			return nil, status.Error(codes.InvalidArgument, "unknown metric type")
 		}
 		metrics = append(metrics, m)
-		names = append(names, item.Id)
+		names = append(names, item.GetId())
 	}
 	if len(metrics) == 0 {
-		return &pb.UpdateMetricsResponse{}, nil
+		return pb.UpdateMetricsResponse_builder{}.Build(), nil
 	}
 	if err := ctx.Err(); err != nil {
 		return nil, status.FromContextError(err).Err()
@@ -129,7 +142,7 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 		if errors.Is(err, delivery.ErrConflict) {
 			return nil, status.Error(codes.AlreadyExists, err.Error())
 		}
-		s.logger.Info("store grpc metrics failed", zap.Error(err))
+		s.logger.Error("store grpc metrics failed", zap.Error(err))
 		return nil, status.Error(codes.Internal, "failed to store metrics")
 	}
 	if applied && s.auditor != nil {
@@ -138,8 +151,8 @@ func (s *metricsServer) UpdateMetrics(ctx context.Context, request *pb.UpdateMet
 			ip = values[0]
 		}
 		if err := s.auditor.Notify(ctx, audit.Event{Timestamp: time.Now().Unix(), Metrics: names, IPAddress: ip}); err != nil {
-			s.logger.Info("grpc audit failed", zap.Error(err))
+			s.logger.Warn("grpc audit failed", zap.Error(err))
 		}
 	}
-	return &pb.UpdateMetricsResponse{}, nil
+	return pb.UpdateMetricsResponse_builder{}.Build(), nil
 }
