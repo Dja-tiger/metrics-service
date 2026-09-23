@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"golang.org/x/sync/errgroup"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/Dja-tiger/metrics-service/internal/delivery"
 	"github.com/Dja-tiger/metrics-service/internal/encryption"
@@ -29,6 +31,7 @@ var errRetriableSend = errors.New("retriable send error")
 
 // Agent collects runtime and system metrics and reports them to a metrics server.
 type Agent struct {
+	sender         BatchSender
 	pendingMu      sync.Mutex
 	pending        []delivery.Batch
 	pollInterval   time.Duration
@@ -41,6 +44,12 @@ type Agent struct {
 	rateLimit      int
 	retrySleep     func(time.Duration)
 }
+
+// BatchSender delivers a metric batch using an alternative transport.
+type BatchSender interface{ SendBatch(delivery.Batch) error }
+
+// WithBatchSender replaces HTTP delivery while preserving retries and worker limits.
+func WithBatchSender(sender BatchSender) Option { return func(a *Agent) { a.sender = sender } }
 
 // Option configures an Agent during construction.
 type Option func(*Agent)
@@ -319,6 +328,9 @@ func (a *Agent) sendBatch(batch delivery.Batch) error {
 		return nil
 	}
 
+	if a.sender != nil {
+		return retry.DoWithSleeper(func() error { return a.sender.SendBatch(batch) }, isRetriableSendError, a.retrySleep)
+	}
 	body, err := json.Marshal(metrics)
 	if err != nil {
 		return fmt.Errorf("marshal metrics: %w", err)
@@ -368,7 +380,7 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string, batchID string) 
 		req.Header.Set(signature.Header, hash)
 	}
 
-	resp, err := a.client.Do(req)
+	resp, err := a.client.Do(withRealIP(req))
 	if err != nil {
 		return fmt.Errorf("%w: send request: %w", errRetriableSend, err)
 	}
@@ -384,5 +396,5 @@ func (a *Agent) sendCompressedMetrics(body []byte, hash string, batchID string) 
 }
 
 func isRetriableSendError(err error) bool {
-	return errors.Is(err, errRetriableSend)
+	return errors.Is(err, errRetriableSend) || status.Code(err) == codes.Unavailable
 }

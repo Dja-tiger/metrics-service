@@ -11,6 +11,8 @@ import (
 // AgentConfig contains the effective agent settings.
 type AgentConfig struct {
 	Address        string
+	GRPCAddress    string
+	GRPCTLSCA      string
 	ReportInterval int
 	PollInterval   int
 	RateLimit      int
@@ -20,6 +22,8 @@ type AgentConfig struct {
 
 // LoadAgentConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadAgentConfig() (AgentConfig, error) {
+	grpcFlag := flag.String("grpc-address", "", "optional gRPC server address")
+	grpcTLSCAFlag := flag.String("grpc-tls-ca", "", "gRPC trusted CA PEM file (empty uses system roots)")
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	reportIntervalFlag := flag.Int("r", 10, "report interval in seconds")
 	pollIntervalFlag := flag.Int("p", 2, "poll interval in seconds")
@@ -29,6 +33,8 @@ func LoadAgentConfig() (AgentConfig, error) {
 	configPath := configFileFlags()
 	flag.Parse()
 	if err := applyFile(*configPath, []fileOption{
+		{field: "grpc_address", flag: "grpc-address", env: []string{"GRPC_ADDRESS"}},
+		{field: "grpc_tls_ca", flag: "grpc-tls-ca", env: []string{"GRPC_TLS_CA"}},
 		{field: "address", flag: "a", env: []string{"ADDRESS"}},
 		{field: "report_interval", flag: "r", env: []string{"REPORT_INTERVAL"}, duration: true},
 		{field: "poll_interval", flag: "p", env: []string{"POLL_INTERVAL"}, duration: true},
@@ -40,6 +46,7 @@ func LoadAgentConfig() (AgentConfig, error) {
 	}
 
 	cfg := AgentConfig{
+		GRPCAddress:    *grpcFlag,
 		Address:        *addrFlag,
 		ReportInterval: *reportIntervalFlag,
 		PollInterval:   *pollIntervalFlag,
@@ -48,6 +55,14 @@ func LoadAgentConfig() (AgentConfig, error) {
 		CryptoKey:      *cryptoKeyFlag,
 	}
 
+	cfg.GRPCTLSCA = *grpcTLSCAFlag
+	if value, ok := os.LookupEnv("GRPC_TLS_CA"); ok {
+		cfg.GRPCTLSCA = value
+	}
+
+	if value, ok := os.LookupEnv("GRPC_ADDRESS"); ok {
+		cfg.GRPCAddress = value
+	}
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
 		cfg.Address = envAddress
 	}
@@ -96,6 +111,9 @@ func LoadAgentConfig() (AgentConfig, error) {
 		return AgentConfig{}, err
 	}
 
+	if err := validateGRPCSecurity(cfg.GRPCAddress, cfg.Key, cfg.CryptoKey); err != nil {
+		return AgentConfig{}, err
+	}
 	cfg.Address = normalizeServerURL(cfg.Address)
 	return cfg, nil
 }

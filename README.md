@@ -1,7 +1,8 @@
 # metrics-service
 
-Сервис сбора метрик и алертинга: агент собирает метрики и передаёт их серверу.
-Проект основан на учебном шаблоне Yandex Practicum.
+Агент собирает метрики Go runtime, памяти и CPU и отправляет их серверу батчами
+по HTTP или gRPC. Сервер хранит метрики в памяти, JSON-файле или PostgreSQL.
+Поддерживаются gzip, подпись HTTP-запросов, шифрование и аудит обновлений.
 
 ## Начало работы
 
@@ -25,21 +26,54 @@ go run ./cmd/agent
 Все команды ниже выполняются из корня репозитория, если не указано иначе.
 Пути к файлам относительные и не зависят от расположения проекта на компьютере.
 
-## Обновление шаблона
+## HTTP API
 
-Чтобы иметь возможность получать обновления автотестов и других частей шаблона, выполните команду:
+По умолчанию сервер слушает `localhost:8080`. Агент собирает метрики раз в 2 секунды
+и отправляет их раз в 10 секунд.
 
+| Метод и путь | Назначение |
+| --- | --- |
+| `POST /updates/` | Записать массив метрик в JSON |
+| `POST /update/` | Записать одну метрику в JSON |
+| `POST /value/` | Получить метрику по полям `id` и `type` |
+| `POST /update/{type}/{name}/{value}` | Записать метрику через параметры пути |
+| `GET /value/{type}/{name}` | Получить значение в текстовом виде |
+| `GET /` | Посмотреть все метрики на HTML-странице |
+| `GET /ping` | Проверить подключение к PostgreSQL |
+
+Пример записи счётчика и чтения его значения:
+
+```bash
+curl -X POST http://localhost:8080/updates/ \
+  -H 'Content-Type: application/json' \
+  -d '[{"id":"PollCount","type":"counter","delta":1}]'
+curl http://localhost:8080/value/counter/PollCount
 ```
-git remote add -m v2 template https://github.com/Yandex-Practicum/go-musthave-metrics-tpl.git
+
+`gauge` заменяется новым значением, `counter` увеличивается на переданную величину.
+Без настроенного PostgreSQL `/ping` возвращает 500; это не проверка файлового
+хранилища или памяти.
+
+## Доверенная подсеть
+
+Сервер принимает CIDR через JSON-поле `trusted_subnet`, флаг `-t` или переменную
+окружения `TRUSTED_SUBNET`. Приоритет: окружение → явный флаг → файл → пустая строка.
+Пустое значение отключает ограничение; некорректный CIDR останавливает запуск.
+
+```bash
+go run ./cmd/server -t=127.0.0.0/8
+go run ./cmd/agent -a=127.0.0.1:8080
 ```
 
-Для обновления кода автотестов выполните команду:
+Для IPv6 можно указать, например, `-t=::1/128`. Агент автоматически добавляет
+`X-Real-IP` с локальным IP фактического HTTP-соединения, без порта и IPv6 zone.
+При включённой проверке сервер допускает запросы только с одним корректным
+`X-Real-IP`, входящим в подсеть. Отсутствующий, некорректный или недоверенный адрес
+даёт HTTP 403 до распаковки и расшифровки тела. Ограничение применяется ко всем
+эндпоинтам сервера, включая чтение метрик и `/ping`.
 
-```
-git fetch template && git checkout template/v2 .github
-```
-
-Затем добавьте полученные изменения в свой репозиторий.
+Проверяется именно переданный заголовок, как предусмотрено заданием; он не является
+доказательством личности клиента и может быть подменён отправителем.
 
 ## Штатное завершение
 
@@ -90,6 +124,9 @@ go test ./integration -run TestGracefulSignals -count=1 -v
 ```json
 {
   "address": "localhost:8080",
+  "grpc_address": "",
+  "grpc_tls_cert": "",
+  "grpc_tls_key": "",
   "restore": true,
   "store_interval": "5m",
   "store_file": "metrics-storage.json",
@@ -97,7 +134,8 @@ go test ./integration -run TestGracefulSignals -count=1 -v
   "key": "",
   "crypto_key": "",
   "audit_file": "",
-  "audit_url": ""
+  "audit_url": "",
+  "trusted_subnet": ""
 }
 ```
 
@@ -106,6 +144,8 @@ go test ./integration -run TestGracefulSignals -count=1 -v
 ```json
 {
   "address": "localhost:8080",
+  "grpc_address": "",
+  "grpc_tls_ca": "",
   "report_interval": "10s",
   "poll_interval": "2s",
   "rate_limit": 1,
@@ -113,6 +153,15 @@ go test ./integration -run TestGracefulSignals -count=1 -v
   "crypto_key": ""
 }
 ```
+
+Подготовьте локальные конфиги из примеров (существующие файлы не перезаписываются):
+
+```bash
+cp -n server.example.json server.json
+cp -n agent.example.json agent.json
+```
+
+Запуск в отдельных терминалах:
 
 ```bash
 go run ./cmd/server -config=server.json
@@ -269,61 +318,74 @@ go run ./cmd/linter ./...
 go test ./cmd/linter -count=1
 ```
 
-## Запуск автотестов
+## Проверки
 
-Для успешного запуска автотестов называйте ветки `iter<number>`, где `<number>` — порядковый номер инкремента. Например, в ветке с названием `iter4` запустятся автотесты для инкрементов с первого по четвёртый.
+```bash
+go test -race ./... -count=1
+go vet ./...
+go run ./cmd/linter ./...
+```
 
-При мёрже ветки с инкрементом в основную ветку `main` будут запускаться все автотесты.
-
-Подробнее про локальный и автоматический запуск читайте в [README автотестов](https://github.com/Yandex-Practicum/go-autotests).
+Учебные автотесты запускаются в GitHub Actions при обновлении PR.
+Имена веток имеют вид `iter<number>`; выбор проверок задан в
+[workflow автотестов](.github/workflows/mertricstest.yml).
 
 ## Структура проекта
 
-Приведённая в этом репозитории структура проекта является рекомендуемой, но не обязательной.
+- `cmd/agent`, `cmd/server` — запуск приложений.
+- `internal/agent` — сбор метрик, очередь отправки и повторы.
+- `internal/handler`, `internal/middleware` — HTTP API и обработка запросов.
+- `internal/grpcapi`, `internal/proto` — gRPC API и protobuf-сообщения.
+- `internal/service`, `internal/repository` — обновление и хранение метрик.
+- `internal/config` — параметры из JSON, флагов и окружения.
+- `internal/audit`, `internal/encryption`, `internal/signature` — аудит и защита HTTP.
+- `cmd/reset`, `cmd/linter`, `internal/pool` — генератор Reset, анализатор и пул объектов.
+- `integration` — тесты запуска и завершения процессов.
+- `profiles` — сохранённые профили памяти.
 
-Это лишь пример организации кода, который поможет вам в реализации сервиса.
+## Производительность
 
-При необходимости можно вносить изменения в структуру проекта, использовать любые библиотеки и предпочитаемые структурные паттерны организации кода приложения, например:
-- **DDD** (Domain-Driven Design)
-- **Clean Architecture**
-- **Hexagonal Architecture**
-- **Layered Architecture**
-
-## Профилирование памяти
-
-Для инкремента 17 добавлены benchmark-тесты для основных компонентов сервиса:
-
-- сохранение и batch-обновление метрик в `MemStorage`;
-- обработка batch JSON-запроса `POST /updates/`;
-- отправка batch-метрик агентом;
-- snapshot метрик агента;
-- audit-наблюдатели;
-- расчёт и проверка SHA256-подписи.
-
-Базовый профиль памяти сохранён в `profiles/base.pprof`, итоговый профиль после оптимизации — в `profiles/result.pprof`.
-
-Команды для снятия профилей:
+Бенчмарки проверяют запись и обновление хранилища, HTTP-обработчики, отправку
+батчей, сбор снимка метрик, аудит и подпись запросов.
 
 ```bash
-go test ./internal/repository -run=^$ -bench=BenchmarkMemStorageSaveToFile -benchmem -memprofile=profiles/base.pprof
-go test ./internal/repository -run=^$ -bench=BenchmarkMemStorageSaveToFile -benchmem -memprofile=profiles/result.pprof
-pprof -top -diff_base=profiles/base.pprof profiles/result.pprof
+go test ./internal/... -run='^$' -bench=. -benchmem
 ```
 
-До оптимизации сохранение метрик формировало полный pretty JSON в памяти через `json.MarshalIndent`, а затем записывало его в файл. После анализа `pprof top`, `pprof list` и `pprof peek` сохранение переведено на запись компактного JSON через `json.Encoder`, а создание snapshot-метрик уменьшает количество отдельных heap-аллокаций для значений `Value` и `Delta`.
+Для нового профиля сохранения в файл:
 
-Ниже сохранены исторические результаты инкремента 17, а не измерение текущей версии.
-Имена `github.com/Dja-tiger/metrics-service/...` в выводе pprof — пути Go-пакетов,
-а не абсолютные пути на компьютере разработчика.
+```bash
+mkdir -p .local/profiles
+go test ./internal/repository -run='^$' -bench='^BenchmarkMemStorageSaveToFile$' \
+  -benchmem -memprofile=.local/profiles/current.pprof -o .local/profiles/repository.test
+go tool pprof -alloc_space -top .local/profiles/current.pprof
+```
 
-Результат benchmark для `SaveToFile`:
+### Сохранённый замер
+
+В `profiles/base.pprof` и `profiles/result.pprof` остались профили до и после
+оптимизации записи JSON. Вместо `json.MarshalIndent` используется `json.Encoder`,
+а значения метрик при создании снимка размещаются в общих слайсах.
+
+Эти результаты сняты 17 июля 2026 года. После этого код менялся, поэтому для оценки
+текущей версии нужен новый замер. Два последовательных запуска одной версии не
+воспроизводят сравнение «до/после».
+
+Сравнить сохранённые профили:
+
+```bash
+go tool pprof -alloc_space -top -diff_base=profiles/base.pprof profiles/result.pprof
+```
+
+Сохранение набора из 512 gauge и 512 counter:
 
 ```text
 До:    717533 ns/op  255377 B/op  1044 allocs/op
 После: 405814 ns/op   78191 B/op    19 allocs/op
 ```
 
-Результат сравнения профилей:
+<details>
+<summary>Вывод сравнения профилей памяти</summary>
 
 ```text
 File: repository.test
@@ -355,6 +417,82 @@ Dropped 68 nodes (cum <= 3.32MB)
          0     0% 49.07%  -321.88MB 48.54%  testing.(*B).runN
 ```
 
+</details>
+
+## gRPC
+
+HTTP API сохранён. Дополнительный gRPC listener сервера и gRPC-транспорт агента
+включаются непустым параметром `-grpc-address`, переменной `GRPC_ADDRESS`
+или полем `"grpc_address"` JSON-конфигурации.
+Приоритет: окружение > явно переданный флаг > JSON > пустое значение (только HTTP).
+
+gRPC работает только через TLS. При включении gRPC серверу нужны сертификат и
+приватный ключ. Агент проверяет сертификат и имя сервера.
+
+| Приложение | Флаг | Переменная окружения | Поле JSON |
+| --- | --- | --- | --- |
+| Сервер | `-grpc-tls-cert` | `GRPC_TLS_CERT` | `grpc_tls_cert` |
+| Сервер | `-grpc-tls-key` | `GRPC_TLS_KEY` | `grpc_tls_key` |
+| Агент | `-grpc-tls-ca` | `GRPC_TLS_CA` | `grpc_tls_ca` |
+
+Для локального запуска создайте самоподписанный сертификат с адресами сервера
+в SAN (команда для OpenSSL с поддержкой `-addext`):
+
+```sh
+mkdir -p .local/grpc
+chmod 700 .local/grpc
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -subj "/CN=localhost" \
+  -addext "subjectAltName=DNS:localhost,IP:127.0.0.1,IP:::1" \
+  -keyout .local/grpc/server.key -out .local/grpc/server.crt
+chmod 600 .local/grpc/server.key
+```
+
+Не добавляйте приватный ключ в Git; `.local/` уже исключён из репозитория.
+На другом хосте агенту нужен только доверенный сертификат, а не приватный ключ.
+Проверяйте источник сертификата перед передачей агенту. Если `grpc_tls_ca` пуст,
+агент использует системные корневые сертификаты — проверка TLS не отключается.
+
+Запуск в двух терминалах:
+
+```sh
+go run ./cmd/server -a=localhost:8080 -grpc-address=localhost:9090 \
+  -grpc-tls-cert=.local/grpc/server.crt -grpc-tls-key=.local/grpc/server.key \
+  -t=127.0.0.0/8
+go run ./cmd/agent -grpc-address=127.0.0.1:9090 \
+  -grpc-tls-ca=.local/grpc/server.crt -r=10 -p=2 -l=2
+```
+
+Это TLS с проверкой сервера, не mTLS: сертификат клиента не запрашивается.
+
+Агент отправляет protobuf-батчи через `metrics.Metrics/UpdateMetrics` с gzip.
+Метаданные `x-real-ip` содержат локальный IP фактического соединения.
+Unary interceptor проверяет его по `trusted_subnet`; отсутствующий, некорректный
+или недоверенный IP даёт `PermissionDenied`. При пустой подсети ограничений нет.
+Это проверка заявленного IP, не аутентификация клиента.
+
+Оба API используют общий сервис/хранилище и аудит. Неверный батч отклоняется
+до изменения хранилища. Пустые батчи агент не отправляет. Worker pool ограничивает
+параллелизм; `Unavailable` повторяется до трёх раз с задержками 1, 3, 5 секунд.
+При остановке агент завершает отправку, сервер дожидается HTTP и gRPC запросов
+и затем сохраняет итоговое состояние.
+
+HTTP-подпись `KEY` и RSA-шифрование
+`CRYPTO_KEY` относятся только к HTTP, а не к protobuf-транспорту.
+Чтобы не отключать защиту молча, комбинация gRPC с непустым KEY или CRYPTO_KEY
+отклоняется при запуске агента и сервера. Используйте HTTP для подписанных/зашифрованных
+запросов; TLS защищает gRPC-соединение отдельно.
+
+Протокол: `internal/proto/metrics.proto`. Сгенерированные Go-файлы включены
+в репозиторий; для обычной сборки protoc не нужен. Go-код использует Opaque API:
+создание через builders, чтение через getters, изменение через setters. Формат
+proto3 в сети не изменён. Перегенерация (использован protoc 35.1):
+
+```sh
+go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.11
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
+PATH="$(go env GOPATH)/bin:$PATH" go generate ./internal/proto
+```
 ## Повторная доставка батчей
 
 Агент присваивает каждому снимку случайный `Idempotency-Key`. Все повторы,
@@ -364,7 +502,8 @@ Dropped 68 nodes (cum <= 3.32MB)
 агента; это не дисковая очередь для восстановления после аварии агента.
 
 Сервер применяет батч с одним ID не более одного раза. Повтор с другим содержимым
-получает HTTP 409. Запросы без ключа сохраняют прежнюю аддитивную семантику.
+получает HTTP 409 или gRPC AlreadyExists. В gRPC ID передаётся метаданными
+`idempotency-key` (без изменения protobuf-схемы). Запросы без ключа сохраняют прежнюю аддитивную семантику.
 Повтор успешно обработанного запроса не создаёт второе событие аудита.
 
 В PostgreSQL миграция `00002_metric_receipts.sql` добавляет квитанции:
@@ -379,7 +518,7 @@ Dropped 68 nodes (cum <= 3.32MB)
 старого запроса. Поэтому их размер растёт с числом принятых батчей.
 Не удаляйте таблицу квитанций или поле файла независимо от соответствующих метрик.
 
-Регрессионные проверки: потеря всех HTTP-ответов после сохранения, повтор из
+Регрессионные проверки: потеря всех HTTP/gRPC-ответов после сохранения, повтор из
 очереди, конфликт ID, конкурентные дубликаты, восстановление файла и ошибка
 синхронного сохранения. Для проверки реальных PostgreSQL-транзакций:
 

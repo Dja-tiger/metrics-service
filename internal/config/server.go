@@ -11,6 +11,9 @@ import (
 // ServerConfig contains the effective server settings.
 type ServerConfig struct {
 	Address            string
+	GRPCAddress        string
+	GRPCTLSCert        string
+	GRPCTLSKey         string
 	StoreInterval      int
 	FileStoragePath    string
 	FileStorageEnabled bool
@@ -20,10 +23,14 @@ type ServerConfig struct {
 	CryptoKey          string
 	AuditFile          string
 	AuditURL           string
+	TrustedSubnet      string
 }
 
 // LoadServerConfig loads defaults, JSON, explicit flags and environment, in that order.
 func LoadServerConfig() (ServerConfig, error) {
+	grpcFlag := flag.String("grpc-address", "", "optional gRPC server address")
+	grpcTLSCertFlag := flag.String("grpc-tls-cert", "", "gRPC TLS certificate PEM file")
+	grpcTLSKeyFlag := flag.String("grpc-tls-key", "", "gRPC TLS private key PEM file")
 	addrFlag := flag.String("a", "localhost:8080", "HTTP server address")
 	storeIntervalFlag := flag.Int("i", 300, "metrics store interval in seconds")
 	fileStoragePathFlag := flag.String("f", "metrics-storage.json", "metrics file storage path")
@@ -33,9 +40,13 @@ func LoadServerConfig() (ServerConfig, error) {
 	cryptoKeyFlag := flag.String("crypto-key", "", "RSA private key PEM file")
 	auditFileFlag := flag.String("audit-file", "", "audit log file path")
 	auditURLFlag := flag.String("audit-url", "", "audit log receiver URL")
+	trustedSubnetFlag := flag.String("t", "", "trusted agent subnet in CIDR notation")
 	configPath := configFileFlags()
 	flag.Parse()
 	if err := applyFile(*configPath, []fileOption{
+		{field: "grpc_address", flag: "grpc-address", env: []string{"GRPC_ADDRESS"}},
+		{field: "grpc_tls_cert", flag: "grpc-tls-cert", env: []string{"GRPC_TLS_CERT"}},
+		{field: "grpc_tls_key", flag: "grpc-tls-key", env: []string{"GRPC_TLS_KEY"}},
 		{field: "address", flag: "a", env: []string{"ADDRESS"}},
 		{field: "store_interval", flag: "i", env: []string{"STORE_INTERVAL"}, duration: true},
 		{field: "store_file", flag: "f", env: []string{"FILE_STORAGE_PATH", "STORE_FILE"}},
@@ -45,6 +56,7 @@ func LoadServerConfig() (ServerConfig, error) {
 		{field: "crypto_key", flag: "crypto-key", env: []string{"CRYPTO_KEY"}},
 		{field: "audit_file", flag: "audit-file", env: []string{"AUDIT_FILE"}},
 		{field: "audit_url", flag: "audit-url", env: []string{"AUDIT_URL"}},
+		{field: "trusted_subnet", flag: "t", env: []string{"TRUSTED_SUBNET"}},
 	}); err != nil {
 		return ServerConfig{}, err
 	}
@@ -57,6 +69,7 @@ func LoadServerConfig() (ServerConfig, error) {
 	})
 
 	cfg := ServerConfig{
+		GRPCAddress:        *grpcFlag,
 		Address:            *addrFlag,
 		StoreInterval:      *storeIntervalFlag,
 		FileStoragePath:    *fileStoragePathFlag,
@@ -67,8 +80,21 @@ func LoadServerConfig() (ServerConfig, error) {
 		CryptoKey:          *cryptoKeyFlag,
 		AuditFile:          *auditFileFlag,
 		AuditURL:           *auditURLFlag,
+		TrustedSubnet:      *trustedSubnetFlag,
 	}
 
+	cfg.GRPCTLSCert = *grpcTLSCertFlag
+	if value, ok := os.LookupEnv("GRPC_TLS_CERT"); ok {
+		cfg.GRPCTLSCert = value
+	}
+	cfg.GRPCTLSKey = *grpcTLSKeyFlag
+	if value, ok := os.LookupEnv("GRPC_TLS_KEY"); ok {
+		cfg.GRPCTLSKey = value
+	}
+
+	if value, ok := os.LookupEnv("GRPC_ADDRESS"); ok {
+		cfg.GRPCAddress = value
+	}
 	if envAddress, ok := os.LookupEnv("ADDRESS"); ok {
 		cfg.Address = envAddress
 	}
@@ -109,6 +135,9 @@ func LoadServerConfig() (ServerConfig, error) {
 	if envAuditURL, ok := os.LookupEnv("AUDIT_URL"); ok {
 		cfg.AuditURL = envAuditURL
 	}
+	if value, ok := os.LookupEnv("TRUSTED_SUBNET"); ok {
+		cfg.TrustedSubnet = value
+	}
 
 	if cfg.StoreInterval < 0 {
 		return ServerConfig{}, fmt.Errorf("store interval must be non-negative")
@@ -118,6 +147,13 @@ func LoadServerConfig() (ServerConfig, error) {
 		return ServerConfig{}, err
 	}
 
+	if cfg.GRPCAddress != "" && (cfg.GRPCTLSCert == "" || cfg.GRPCTLSKey == "") {
+		return ServerConfig{}, fmt.Errorf("gRPC requires GRPC_TLS_CERT/-grpc-tls-cert and GRPC_TLS_KEY/-grpc-tls-key")
+	}
+
+	if err := validateGRPCSecurity(cfg.GRPCAddress, cfg.Key, cfg.CryptoKey); err != nil {
+		return ServerConfig{}, err
+	}
 	cfg.Address = normalizeListenAddr(cfg.Address)
 	return cfg, nil
 }

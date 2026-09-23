@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"log"
 	"net/http"
 	"os/signal"
@@ -10,11 +11,13 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"go.uber.org/zap"
+	"google.golang.org/grpc"
 
 	"github.com/Dja-tiger/metrics-service/internal/audit"
 	"github.com/Dja-tiger/metrics-service/internal/buildinfo"
 	"github.com/Dja-tiger/metrics-service/internal/config"
 	"github.com/Dja-tiger/metrics-service/internal/encryption"
+	"github.com/Dja-tiger/metrics-service/internal/grpcapi"
 	"github.com/Dja-tiger/metrics-service/internal/handler"
 	appmiddleware "github.com/Dja-tiger/metrics-service/internal/middleware"
 	"github.com/Dja-tiger/metrics-service/internal/repository"
@@ -42,6 +45,21 @@ func main() {
 	cfg, err := config.LoadServerConfig()
 	if err != nil {
 		log.Fatal(err)
+	}
+
+	var trustedSubnet func(http.Handler) http.Handler
+	if cfg.TrustedSubnet != "" {
+		trustedSubnet, err = appmiddleware.TrustedSubnet(cfg.TrustedSubnet)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	var grpcTLS *tls.Config
+	if cfg.GRPCAddress != "" {
+		grpcTLS, err = grpcapi.LoadServerTLS(cfg.GRPCTLSCert, cfg.GRPCTLSKey)
+		if err != nil {
+			log.Fatal(err)
+		}
 	}
 
 	privateKey, err := encryption.LoadPrivateKey(cfg.CryptoKey)
@@ -92,6 +110,9 @@ func main() {
 
 	router := chi.NewRouter()
 	router.Use(appmiddleware.RequestLogger(logger))
+	if trustedSubnet != nil {
+		router.Use(trustedSubnet)
+	}
 	if privateKey != nil {
 		router.Use(appmiddleware.Decrypt(privateKey))
 	}
@@ -110,8 +131,15 @@ func main() {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM, syscall.SIGQUIT)
 	defer stop()
+	var grpcServer *grpc.Server
+	if cfg.GRPCAddress != "" {
+		grpcServer, err = grpcapi.NewServer(metricsService, cfg.TrustedSubnet, auditor, logger, grpcTLS)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
 	srv := &http.Server{Addr: cfg.Address, Handler: router}
-	if err = server.Run(ctx, srv, metricsService.Close); err != nil {
+	if err = server.RunWithGRPC(ctx, srv, grpcServer, cfg.GRPCAddress, metricsService.Close); err != nil {
 		if db != nil {
 			_ = db.Close()
 		}
