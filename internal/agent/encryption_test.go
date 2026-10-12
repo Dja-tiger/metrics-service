@@ -28,6 +28,11 @@ func TestEncryptedBatchWithGzipSignatureAndRetry(t *testing.T) {
 	storage := repository.NewMemStorage()
 	h := handler.NewMetricsHandler(service.NewMetricsService(storage))
 	router := chi.NewRouter()
+	trustedSubnet, err := middleware.TrustedSubnet("127.0.0.0/8")
+	if err != nil {
+		t.Fatal(err)
+	}
+	router.Use(trustedSubnet)
 	router.Use(middleware.Decrypt(key))
 	router.Use(middleware.Gzip)
 	router.Use(middleware.HashSHA256("secret"))

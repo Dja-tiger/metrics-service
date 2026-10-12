@@ -29,7 +29,7 @@ func start(t *testing.T, binary string, args ...string) *process {
 	p.cmd.Stdout = &p.output
 	p.cmd.Stderr = &p.output
 	// Ignore the developer's runtime configuration for isolated process tests.
-	configVars := map[string]bool{"CONFIG": true, "ADDRESS": true, "REPORT_INTERVAL": true, "POLL_INTERVAL": true, "RATE_LIMIT": true, "KEY": true, "CRYPTO_KEY": true, "STORE_INTERVAL": true, "FILE_STORAGE_PATH": true, "STORE_FILE": true, "RESTORE": true, "DATABASE_DSN": true, "AUDIT_FILE": true, "AUDIT_URL": true}
+	configVars := map[string]bool{"TRUSTED_SUBNET": true, "CONFIG": true, "ADDRESS": true, "REPORT_INTERVAL": true, "POLL_INTERVAL": true, "RATE_LIMIT": true, "KEY": true, "CRYPTO_KEY": true, "STORE_INTERVAL": true, "FILE_STORAGE_PATH": true, "STORE_FILE": true, "RESTORE": true, "DATABASE_DSN": true, "AUDIT_FILE": true, "AUDIT_URL": true}
 	for _, entry := range os.Environ() {
 		name, _, _ := strings.Cut(entry, "=")
 		if !configVars[name] {

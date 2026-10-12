@@ -23,7 +23,7 @@ func TestCryptoKeyConfiguration(t *testing.T) {
 				{name: "empty environment disables", args: []string{"-crypto-key=flag.pem"}, setEnv: true},
 			} {
 				t.Run(tc.name, func(t *testing.T) {
-					for _, name := range []string{"CONFIG", "STORE_FILE", "ADDRESS", "REPORT_INTERVAL", "POLL_INTERVAL", "RATE_LIMIT", "KEY", "STORE_INTERVAL", "FILE_STORAGE_PATH", "RESTORE", "DATABASE_DSN", "AUDIT_FILE", "AUDIT_URL", "CRYPTO_KEY"} {
+					for _, name := range []string{"TRUSTED_SUBNET", "CONFIG", "STORE_FILE", "ADDRESS", "REPORT_INTERVAL", "POLL_INTERVAL", "RATE_LIMIT", "KEY", "STORE_INTERVAL", "FILE_STORAGE_PATH", "RESTORE", "DATABASE_DSN", "AUDIT_FILE", "AUDIT_URL", "CRYPTO_KEY"} {
 						t.Setenv(name, "")
 						if err := os.Unsetenv(name); err != nil {
 							t.Fatal(err)
